@@ -1,0 +1,4 @@
+docs/
+server-manager.config.json
+*.legacy.bak
+.worktrees/
