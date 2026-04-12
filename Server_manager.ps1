@@ -449,38 +449,133 @@ function Convert-LegacyPidRecords {
 	return $records
 }
 
+function Resolve-LegacyFilePath {
+	param(
+		[string] $PathReferenceFile,
+		[string] $FallbackPath
+	)
+
+	# Check the path-reference file first (e.g. modListPath.txt contains a path to the actual mod_list.txt)
+	if (![string]::IsNullOrWhiteSpace($PathReferenceFile) -and (Test-Path -LiteralPath $PathReferenceFile))
+		{
+			$referencedPath = (Get-Content -LiteralPath $PathReferenceFile -Raw).Trim()
+			if (![string]::IsNullOrWhiteSpace($referencedPath))
+				{
+					# Handle relative paths by resolving against script root
+					if ($referencedPath -notmatch '^[A-Za-z]:\\' -and $referencedPath -notmatch '^\\\\')
+						{
+							$referencedPath = Join-Path $PSScriptRoot $referencedPath
+						}
+
+					if (Test-Path -LiteralPath $referencedPath)
+						{
+							return [pscustomobject]@{
+								Path = $referencedPath
+								Source = 'reference'
+							}
+						}
+				}
+		}
+
+	# Fall back to the hardcoded location
+	if (![string]::IsNullOrWhiteSpace($FallbackPath) -and (Test-Path -LiteralPath $FallbackPath))
+		{
+			return [pscustomobject]@{
+				Path = $FallbackPath
+				Source = 'fallback'
+			}
+		}
+
+	return $null
+}
+
 function Initialize-RootConfig {
 	param(
 		[string] $RootPath,
-		[string] $ConfigPath
+		[string] $ConfigPath,
+		[string] $DocFolder = $null
 	)
 
 	if (Test-Path -LiteralPath $ConfigPath)
 		{
-			return
+			return @()
 		}
 
-	$launchPath = Join-Path $RootPath 'launch_params.txt'
-	$modPath = Join-Path $RootPath 'mod_list.txt'
-	$serverModPath = Join-Path $RootPath 'server_mod_list.txt'
+	$report = @()
+
+	# Resolve launch parameters file
+	$launchResolved = $null
+	if ($DocFolder)
+		{
+			$launchResolved = Resolve-LegacyFilePath (Join-Path $DocFolder 'userServerParPath.txt') (Join-Path $RootPath 'launch_params.txt')
+		} else {
+			$fallback = Join-Path $RootPath 'launch_params.txt'
+			if (Test-Path -LiteralPath $fallback)
+				{
+					$launchResolved = [pscustomobject]@{ Path = $fallback; Source = 'fallback' }
+				}
+		}
 
 	$launchParameters = '-config=serverDZ.cfg "-mod=" "-serverMod=" "-profiles=<DayZServerPath>\logs" -port=2302 -freezecheck -adminlog -dologs'
-	if (Test-Path -LiteralPath $launchPath)
+	if ($launchResolved)
 		{
-			$launchParameters = Get-Content -LiteralPath $launchPath -Raw
-			$launchParameters = $launchParameters.Trim()
+			$launchParameters = (Get-Content -LiteralPath $launchResolved.Path -Raw).Trim()
+			$report += [pscustomobject]@{
+				fileName    = [System.IO.Path]::GetFileName($launchResolved.Path)
+				sourcePath  = $launchResolved.Path
+				targetFile  = 'server-manager.config.json'
+				description = 'Launch parameters'
+			}
+		}
+
+	# Resolve client mod list
+	$modResolved = $null
+	if ($DocFolder)
+		{
+			$modResolved = Resolve-LegacyFilePath (Join-Path $DocFolder 'modListPath.txt') (Join-Path $RootPath 'mod_list.txt')
+		} else {
+			$fallback = Join-Path $RootPath 'mod_list.txt'
+			if (Test-Path -LiteralPath $fallback)
+				{
+					$modResolved = [pscustomobject]@{ Path = $fallback; Source = 'fallback' }
+				}
 		}
 
 	$mods = @()
-	if (Test-Path -LiteralPath $modPath)
+	if ($modResolved)
 		{
-			$mods = Convert-LegacyModList (Get-Content -LiteralPath $modPath)
+			$mods = Convert-LegacyModList (Get-Content -LiteralPath $modResolved.Path)
+			$report += [pscustomobject]@{
+				fileName    = [System.IO.Path]::GetFileName($modResolved.Path)
+				sourcePath  = $modResolved.Path
+				targetFile  = 'server-manager.config.json'
+				description = "Client mod list ($(@($mods).Count) mod(s))"
+			}
+		}
+
+	# Resolve server mod list
+	$serverModResolved = $null
+	if ($DocFolder)
+		{
+			$serverModResolved = Resolve-LegacyFilePath (Join-Path $DocFolder 'serverModListPath.txt') (Join-Path $RootPath 'server_mod_list.txt')
+		} else {
+			$fallback = Join-Path $RootPath 'server_mod_list.txt'
+			if (Test-Path -LiteralPath $fallback)
+				{
+					$serverModResolved = [pscustomobject]@{ Path = $fallback; Source = 'fallback' }
+				}
 		}
 
 	$serverMods = @()
-	if (Test-Path -LiteralPath $serverModPath)
+	if ($serverModResolved)
 		{
-			$serverMods = Convert-LegacyModList (Get-Content -LiteralPath $serverModPath)
+			$serverMods = Convert-LegacyModList (Get-Content -LiteralPath $serverModResolved.Path)
+			$report += [pscustomobject]@{
+				fileName    = [System.IO.Path]::GetFileName($serverModResolved.Path)
+				sourcePath  = $serverModResolved.Path
+				targetFile  = 'server-manager.config.json'
+				description = "Server mod list ($(@($serverMods).Count) mod(s))"
+			}
 		}
 
 	$config = [pscustomobject]@{
@@ -491,9 +586,20 @@ function Initialize-RootConfig {
 
 	Save-JsonFile $ConfigPath $config
 
-	Backup-LegacyConfigFile $launchPath
-	Backup-LegacyConfigFile $modPath
-	Backup-LegacyConfigFile $serverModPath
+	# Backup resolved data files
+	if ($launchResolved) { Backup-LegacyConfigFile $launchResolved.Path }
+	if ($modResolved) { Backup-LegacyConfigFile $modResolved.Path }
+	if ($serverModResolved) { Backup-LegacyConfigFile $serverModResolved.Path }
+
+	# Backup path-reference files in DocFolder
+	if ($DocFolder)
+		{
+			Backup-LegacyConfigFile (Join-Path $DocFolder 'modListPath.txt')
+			Backup-LegacyConfigFile (Join-Path $DocFolder 'serverModListPath.txt')
+			Backup-LegacyConfigFile (Join-Path $DocFolder 'userServerParPath.txt')
+		}
+
+	return @($report)
 }
 
 function Initialize-StateConfig {
@@ -505,26 +611,69 @@ function Initialize-StateConfig {
 
 	if (Test-Path -LiteralPath $StatePath)
 		{
-			return
+			return @()
 		}
 
-		$steamCmdPath = Get-StateFileValue (Join-Path $StateRoot 'SteamCmdPath.txt')
-		$modLaunch = Get-StateFileValue (Join-Path $StateRoot 'modServerPar.txt')
-		$serverModLaunch = Get-StateFileValue (Join-Path $StateRoot 'serverModServerPar.txt')
+	$report = @()
 
-		$pidPath = Join-Path $StateRoot 'pidServer.txt'
-		$trackedServers = @()
-		if (Test-Path -LiteralPath $pidPath)
-			{
-				$trackedServers = Convert-LegacyPidRecords (Get-Content -LiteralPath $pidPath)
+	$steamCmdPathFile = Join-Path $StateRoot 'SteamCmdPath.txt'
+	$steamCmdPath = Get-StateFileValue $steamCmdPathFile
+	if ($steamCmdPath)
+		{
+			$report += [pscustomobject]@{
+				fileName    = 'SteamCmdPath.txt'
+				sourcePath  = $steamCmdPathFile
+				targetFile  = 'server-manager.state.json'
+				description = "SteamCMD path ($steamCmdPath)"
 			}
+		}
 
-		$state = New-DefaultStateConfig
-		$state.rootConfigPath = $ConfigPath
-		$state.steamCmdPath = $steamCmdPath
-		$state.generatedLaunch.mod = if ($null -ne $modLaunch) { $modLaunch } else { '' }
-		$state.generatedLaunch.serverMod = if ($null -ne $serverModLaunch) { $serverModLaunch } else { '' }
-		$state.trackedServers = @($trackedServers)
+	$modLaunchFile = Join-Path $StateRoot 'modServerPar.txt'
+	$modLaunch = Get-StateFileValue $modLaunchFile
+	if ($modLaunch)
+		{
+			$report += [pscustomobject]@{
+				fileName    = 'modServerPar.txt'
+				sourcePath  = $modLaunchFile
+				targetFile  = 'server-manager.state.json'
+				description = 'Generated mod launch string'
+			}
+		}
+
+	$serverModLaunchFile = Join-Path $StateRoot 'serverModServerPar.txt'
+	$serverModLaunch = Get-StateFileValue $serverModLaunchFile
+	if ($serverModLaunch)
+		{
+			$report += [pscustomobject]@{
+				fileName    = 'serverModServerPar.txt'
+				sourcePath  = $serverModLaunchFile
+				targetFile  = 'server-manager.state.json'
+				description = 'Generated server mod launch string'
+			}
+		}
+
+	$pidPath = Join-Path $StateRoot 'pidServer.txt'
+	$trackedServers = @()
+	if (Test-Path -LiteralPath $pidPath)
+		{
+			$trackedServers = Convert-LegacyPidRecords (Get-Content -LiteralPath $pidPath)
+			if ($trackedServers.Count -gt 0)
+				{
+					$report += [pscustomobject]@{
+						fileName    = 'pidServer.txt'
+						sourcePath  = $pidPath
+						targetFile  = 'server-manager.state.json'
+						description = "Tracked server(s) ($($trackedServers.Count))"
+					}
+				}
+		}
+
+	$state = New-DefaultStateConfig
+	$state.rootConfigPath = $ConfigPath
+	$state.steamCmdPath = $steamCmdPath
+	$state.generatedLaunch.mod = if ($null -ne $modLaunch) { $modLaunch } else { '' }
+	$state.generatedLaunch.serverMod = if ($null -ne $serverModLaunch) { $serverModLaunch } else { '' }
+	$state.trackedServers = @($trackedServers)
 
 	Save-JsonFile $StatePath $state
 
@@ -535,11 +684,54 @@ function Initialize-StateConfig {
 	Backup-LegacyConfigFile (Join-Path $StateRoot 'modServerPar.txt')
 	Backup-LegacyConfigFile (Join-Path $StateRoot 'serverModServerPar.txt')
 	Backup-LegacyConfigFile (Join-Path $StateRoot 'pidServer.txt')
+
+	return @($report)
+}
+
+function Show-MigrationReport {
+	param([object[]] $Report)
+
+	if (!$Report -or $Report.Count -eq 0)
+		{
+			return
+		}
+
+	Write-Host ""
+	Write-Host "========================================"
+	Write-Host " Configuration Migrated"
+	Write-Host "========================================"
+	Write-Host ""
+	Write-Host " Your legacy configuration files have been"
+	Write-Host " migrated to the new JSON format."
+	Write-Host ""
+	Write-Host " $([string]::new([char]0x2500, 37))"
+
+	foreach ($item in $Report)
+		{
+			Write-Host "  $([char]0x2713) $($item.description)" -ForegroundColor Green
+			Write-Host "    $($item.sourcePath)" -ForegroundColor DarkGray
+		}
+
+	Write-Host " $([string]::new([char]0x2500, 37))"
+	Write-Host ""
+	Write-Host " Original files have been renamed to *.legacy.bak"
+	Write-Host ""
+	Write-Host " Note: Steam credentials were not stored by the" -ForegroundColor Yellow
+	Write-Host " previous script. Use 'Configure SteamCMD account'" -ForegroundColor Yellow
+	Write-Host " from the server menu to save your login." -ForegroundColor Yellow
+	Write-Host ""
+
+	if (Test-InteractiveMenuMode)
+		{
+			[void](Read-Host -Prompt ' Press Enter to continue')
+		}
 }
 
 function Initialize-ConfigFiles {
-	Initialize-RootConfig $PSScriptRoot $rootConfigPath
-	Initialize-StateConfig $docFolder $stateConfigPath $rootConfigPath
+	$rootReport = @(Initialize-RootConfig $PSScriptRoot $rootConfigPath $docFolder)
+	$stateReport = @(Initialize-StateConfig $docFolder $stateConfigPath $rootConfigPath)
+	$fullReport = @($rootReport) + @($stateReport) | Where-Object { $_ }
+	Show-MigrationReport $fullReport
 }
 
 function New-DefaultStateConfig {
