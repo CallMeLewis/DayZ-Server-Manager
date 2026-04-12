@@ -2228,25 +2228,130 @@ function SteamCMDExe {
                             $downloadURL = Get-SteamCmdDownloadUrl
                             $destPath = "$folder\steamcmd.zip"
 
-                            $webClient = New-Object System.Net.WebClient
-                            try {
-                                $webClient.DownloadFile($downloadURL, $destPath)
-                            } finally {
-                                $webClient.Dispose()
-                            }
+                            # Ensure TLS 1.2 is available for HTTPS downloads
+                            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+                            $downloadSuccess = $false
+
+                            # Method 1: Invoke-WebRequest
+                            if (!$downloadSuccess)
+                                {
+                                    try
+                                        {
+                                            echo "Downloading via Invoke-WebRequest..."
+                                            Invoke-WebRequest -Uri $downloadURL -OutFile $destPath -UseBasicParsing -ErrorAction Stop
+                                            if (Test-Path -LiteralPath $destPath) { $downloadSuccess = $true }
+                                        }
+                                    catch
+                                        {
+                                            echo "Invoke-WebRequest failed: $($_.Exception.Message)"
+                                        }
+                                }
+
+                            # Method 2: System.Net.WebClient
+                            if (!$downloadSuccess)
+                                {
+                                    try
+                                        {
+                                            echo "Trying WebClient..."
+                                            $wc = New-Object System.Net.WebClient
+                                            $wc.DownloadFile($downloadURL, $destPath)
+                                            if (Test-Path -LiteralPath $destPath) { $downloadSuccess = $true }
+                                        }
+                                    catch
+                                        {
+                                            echo "WebClient failed: $($_.Exception.Message)"
+                                        }
+                                    finally
+                                        {
+                                            if ($wc) { $wc.Dispose() }
+                                        }
+                                }
+
+                            # Method 3: Start-BitsTransfer
+                            if (!$downloadSuccess)
+                                {
+                                    try
+                                        {
+                                            echo "Trying BITS transfer..."
+                                            Start-BitsTransfer -Source $downloadURL -Destination $destPath -ErrorAction Stop
+                                            if (Test-Path -LiteralPath $destPath) { $downloadSuccess = $true }
+                                        }
+                                    catch
+                                        {
+                                            echo "BITS transfer failed: $($_.Exception.Message)"
+                                        }
+                                }
+
+                            if (!$downloadSuccess)
+                                {
+                                    echo "`n"
+                                    echo "All download methods failed."
+                                    echo "Download SteamCMD manually from:"
+                                    echo "  $downloadURL"
+                                    echo "and extract it to: $folder"
+                                    echo "`n"
+                                    if ($script:startupBootstrapActive) { return $false }
+                                    pause
+                                    Menu
+                                    return $false
+                                }
+
+                            #Verify download
+                            if (!(Test-Path -LiteralPath $destPath))
+                                {
+                                    echo "Download appeared to succeed but steamcmd.zip was not found at $destPath"
+                                    echo "`n"
+                                    if ($script:startupBootstrapActive) { return $false }
+                                    pause
+                                    Menu
+                                    return $false
+                                }
+
+                            $zipSize = (Get-Item -LiteralPath $destPath).Length
+                            echo "Downloaded steamcmd.zip ($zipSize bytes)"
 
                             #Unzip SteamCMD
-                            $shell = New-Object -ComObject Shell.Application
-                            $zipFile = $shell.NameSpace($destPath)
-                            $unzipPath = $shell.NameSpace("$folder")
-
-                            $copyFlags = 0x00
-                            $copyFlags += 0x04 # Hide progress dialogs
-                            $copyFlags += 0x10 # Overwrite existing files
-
-                            $unzipPath.CopyHere($zipFile.Items(), $copyFlags)
+                            echo "Extracting..."
+                            try
+                                {
+                                    Expand-Archive -LiteralPath $destPath -DestinationPath "$folder" -Force -ErrorAction Stop
+                                }
+                            catch
+                                {
+                                    echo "Expand-Archive failed: $($_.Exception.Message)"
+                                    echo "Trying Shell.Application fallback..."
+                                    try
+                                        {
+                                            $shell = New-Object -ComObject Shell.Application
+                                            $zipFile = $shell.NameSpace($destPath)
+                                            $unzipPath = $shell.NameSpace("$folder")
+                                            $copyFlags = 0x04 -bor 0x10
+                                            $unzipPath.CopyHere($zipFile.Items(), $copyFlags)
+                                        }
+                                    catch
+                                        {
+                                            echo "Shell extraction also failed: $($_.Exception.Message)"
+                                            echo "`n"
+                                            if ($script:startupBootstrapActive) { return $false }
+                                            pause
+                                            Menu
+                                            return $false
+                                        }
+                                }
 
 							$steamCmdExe = Join-Path $folder 'steamcmd.exe'
+                            if (!(Test-Path -LiteralPath $steamCmdExe))
+                                {
+                                    echo "Extraction completed but steamcmd.exe was not found in $folder"
+                                    echo "`n"
+                                    if ($script:startupBootstrapActive) { return $false }
+                                    pause
+                                    Menu
+                                    return $false
+                                }
+
+                            echo "Verifying signature..."
 							if (!(Test-ExpectedSigner $steamCmdExe 'Valve Corp\.'))
 								{
 									echo "The downloaded steamcmd.exe file does not have a valid Valve signature. Aborting."
