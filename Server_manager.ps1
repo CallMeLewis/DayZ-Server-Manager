@@ -623,6 +623,13 @@ function Get-StateConfig {
 			$state = $normalizedState
 		}
 
+	# Ensure trackedServers property exists on loaded state.
+	if (-not ($state.PSObject.Properties.Name -contains 'trackedServers'))
+		{
+			$state | Add-Member -NotePropertyName trackedServers -NotePropertyValue @() -Force
+			Save-StateConfig $state
+		}
+
 	# Migrate legacy Base64-encoded username blobs to DPAPI encryption.
 	if ($state.PSObject.Properties.Name -contains 'serverSteamAuth' -and
 		$state.serverSteamAuth -and
