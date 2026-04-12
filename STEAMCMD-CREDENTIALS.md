@@ -1,26 +1,25 @@
 # SteamCMD Credential Handling
 
-This document explains how `Server_manager.ps1` handles SteamCMD credentials today.
+This guide describes how Server\_manager.ps1 manages your SteamCMD login details. Use this information to understand how your account name and password are handled before you enter them into the script.
 
-It is written for anyone who wants to understand exactly what the script does before entering a Steam account name and password.
+## Summary
 
-## Short Version
+- The script never asks for Steam credentials when it starts.
+- One-time logins stay in memory only for your active PowerShell session.
+- Saved logins are stored in a state file within your system Documents folder.
+- The script encrypts your username and password using Windows DPAPI. Only your Windows user account on your specific machine can decrypt them.
+- File permissions restrict the state file so only your Windows user can access it.
+- The script only interacts with your local steamcmd.exe. It never sends your details to external services.
+- Credentials pass to SteamCMD through a temporary runscript file. This file is deleted the moment SteamCMD finishes.
 
-- The script does not ask for Steam credentials on startup.
-- A one-time login is kept in memory only for the current PowerShell session.
-- A saved login is written to `%USERPROFILE%\Documents\DayZ_Server\server-manager.state.json`.
-- The saved password is not stored in plaintext in that JSON file.
-- The script does not send credentials to any service of its own. It launches local `steamcmd.exe` and passes the credentials to SteamCMD.
-- The password is converted back to plaintext in memory and passed to SteamCMD as `+login <user> <password>`.
+## Credential Storage Locations
 
-## Where Credentials Live
+The script uses two places for credentials:
 
-The script uses two credential locations:
+- Session-only: Stored in the `$script:steamCmdSessionCredential` variable.
+- Saved: Stored in `Documents\DayZ_Server\server-manager.state.json`.
 
-- Session-only credential: stored in the script variable `$script:steamCmdSessionCredential`
-- Saved credential: stored in the state file at `%USERPROFILE%\Documents\DayZ_Server\server-manager.state.json`
-
-The saved credential is stored under the `serverSteamAuth` property with this shape:
+The saved file uses the `serverSteamAuth` property:
 
 ```json
 {
@@ -31,130 +30,131 @@ The saved credential is stored under the `serverSteamAuth` property with this sh
 }
 ```
 
-## What Gets Stored
+## Storage Methods
 
 ### Username
 
-The username is stored in `usernameBlob`.
-
-This is created by `Protect-StateSecret -AsPlainText`, which base64-encodes the username. That makes it safe for JSON storage, but it is not a secret-protection mechanism by itself.
+The `usernameBlob` contains your encrypted username. The `Protect-StateSecret` function turns the name into a `SecureString` and uses `ConvertFrom-SecureString` to create an encrypted blob. This uses Windows DPAPI to lock the data to your Windows account. If you have an older state file using Base64, the script automatically upgrades it to DPAPI encryption when you first run it.
 
 ### Password
 
-The password is stored in `passwordBlob`.
-
-This is created by:
+The `passwordBlob` uses the same DPAPI encryption method:
 
 ```powershell
 $secureValue = ConvertTo-SecureString $Value -AsPlainText -Force
 ConvertFrom-SecureString $secureValue
 ```
 
-The script does not call `System.Security.Cryptography.ProtectedData` directly. Instead, it relies on PowerShell's built-in `ConvertFrom-SecureString` and `ConvertTo-SecureString` behavior.
+The script relies on PowerShell's built-in commands to handle the cryptography internally.
 
-In practical terms, the saved password blob is intended to be recoverable by the same Windows user context that created it, through PowerShell, on that machine.
+### File Permissions
 
-## One-Time vs Saved Login
+Every time the script writes to the state file, it uses `icacls` to lock it down. It removes inherited permissions and grants full control only to your Windows user.
 
-### Use Account Once
+## Login Options
 
-If the user chooses `Use account once`:
+### One-Time Login
 
-- the script prompts for account name and password
-- creates a `PSCredential`
-- stores it only in `$script:steamCmdSessionCredential`
-- does not write it to disk
+If you select `Use account once`:
 
-That credential is available to later update operations in the same PowerShell session.
+- The script asks for your name and password.
+- It creates a `PSCredential` object.
+- It keeps the data in `$script:steamCmdSessionCredential` and never writes it to your disk.
+- The credential stays active for other updates until you close the PowerShell window.
 
-### Save Account Securely
+### Saved Login
 
-If the user chooses `Save account securely`:
+If you select `Save account securely`:
 
-- the script prompts for account name and password
-- creates a `PSCredential`
-- writes `usernameBlob` and `passwordBlob` into `server-manager.state.json`
-- clears any leftover session-only credential so status shows `Saved`
+- The script asks for your name and password.
+- It encrypts the data into `usernameBlob` and `passwordBlob` within `server-manager.state.json`.
+- It applies strict file permissions to the JSON file.
+- It clears any session-only data and updates your status to `Saved`.
 
-### Retry After Failed Sign-In
+### Failed Sign-In
 
-If SteamCMD sign-in fails, the retry flow offers:
+If a login fails, you can:
 
-- `Re-enter account once`
-- `Clear saved account and re-enter`
+- Re-enter account once
+- Clear saved account and re-enter
 
-The second path uses a temporary in-memory credential first. It is only written back to `server-manager.state.json` if the retry succeeds.
+The script only updates the saved JSON file if the new login succeeds.
 
-## How Credentials Reach SteamCMD
+## Passing Credentials to SteamCMD
 
-When an authenticated server or Workshop update runs, the script resolves the active credential, then builds the SteamCMD login arguments:
+When you update a server or mod, the script follows these steps:
+
+1. It finds your active saved or session credential.
+2. It writes a temporary file containing `login <username> <password>`.
+3. It starts SteamCMD using `+runscript <path>`. This prevents your password from appearing in the command line or process logs.
+4. It uses a `finally` block to delete the temporary file immediately after SteamCMD closes.
 
 ```powershell
-@('+login', $credential.UserName, $credential.GetNetworkCredential().Password)
+$loginScriptPath = New-SteamCmdLoginScript -Credential $credential -Path $tempLoginScript
+try {
+    $proc = Invoke-SteamCmdCommand (@('+runscript', $loginScriptPath) + $Arguments)
+} finally {
+    Remove-Item -LiteralPath $loginScriptPath -Force -ErrorAction SilentlyContinue
+}
 ```
 
-Those arguments are then converted to a single command-line string and assigned to:
+SteamCMD runs through `System.Diagnostics.Process`. This allows you to see and respond to Steam Guard prompts in your terminal.
 
-```powershell
-$psi.Arguments = ConvertTo-SteamCmdArgumentString $Arguments
-```
+## Security Features
 
-SteamCMD is launched through `System.Diagnostics.Process` with inherited console handles so Steam Guard prompts can appear in the same terminal window.
+The script protects your password through several layers:
 
-## Important Security Implication
+- **No Command-Line Exposure**: Credentials stay inside a temporary file. They never appear in Task Manager or process monitors.
+- **DPAPI Encryption**: Your data is useless on another computer or under a different Windows user.
+- **File Permissions**: The JSON file stays restricted to your account.
+- **Automatic Cleanup**: The script ensures the temporary login file is deleted even if an error occurs.
+- **Parameter Validation**: The script checks server launch parameters against an allowlist to prevent malicious commands.
+- **Signature Checks**: The script verifies Valve's Authenticode signature on steamcmd.exe before running it.
 
-The password is not stored in plaintext on disk, but it is turned back into plaintext before SteamCMD starts.
+Note that your password exists in plaintext briefly while building the runscript file and while SteamCMD is active.
 
-That means:
+## Prohibited Actions
 
-- the password exists in process memory while the script is building the login arguments
-- the password is included in the command line passed to `steamcmd.exe`
-- local process-inspection tools, administrative access, or malware on the machine may be able to read it while SteamCMD is running
+The script is programmed to avoid the following:
 
-The script does not print the password itself, but it also is not a hardened secret vault. It is a convenience layer around local SteamCMD usage.
+- Uploading credentials to GitHub or any cloud service.
+- Sending data to custom APIs or third-party backends.
+- Storing passwords as plain text in JSON.
+- Saving one-time logins to your disk.
 
-## What The Script Does Not Do
+The credentials only go to your local steamcmd.exe.
 
-From the script's own code path:
+## Removing Credentials
 
-- it does not upload credentials to GitHub
-- it does not send credentials to a custom API or third-party backend
-- it does not store the saved password as plain JSON text
-- it does not persist one-time credentials to disk unless the user explicitly chooses a saved flow
+The `Clear-SteamCmdCredential` function performs a full cleanup:
 
-The only intended downstream consumer of the credential is local `steamcmd.exe`, which then authenticates with Steam.
+- It wipes the session credential from memory.
+- It deletes the `serverSteamAuth` section from your state file.
+- It resets the login failure markers.
 
-## Clearing Credentials
+## Security Boundaries
 
-`Clear-SteamCmdCredential` does all of the following:
+This script is a tool for local administrators. It is not a hardened vault. You must assume credentials are visible to:
 
-- clears the in-memory session credential
-- removes `serverSteamAuth` from `server-manager.state.json`
-- clears the `lastSteamCmdSignInFailed` marker
+- The Windows user running the script.
+- Any person or software with admin rights on your machine.
+- Malware or keyloggers already on your system.
 
-## Trust Boundaries
+If these risks concern you, do not use the save feature. Use a dedicated Steam account that only has access to the DayZ server and Workshop files.
 
-This design is reasonable for a local admin utility, but it is not equivalent to a dedicated secret manager.
+## Code Reference
 
-You should assume the credentials are exposed to:
-
-- the Windows user account running the script
-- anything with sufficient local privilege to inspect that user's processes or memory
-- any malware already present on the system
-
-If that risk is not acceptable, do not save the credential, and consider using a dedicated Steam account with only the access required for DayZ server and Workshop downloads.
-
-## Functions To Review
-
-If you want to verify the implementation yourself, these are the key functions in `Server_manager.ps1`:
+You can verify these security steps by reviewing these functions in `Server_manager.ps1`:
 
 - `Protect-StateSecret`
 - `Unprotect-StateSecret`
+- `Convert-LegacyUsernameBlob`
 - `Save-SteamCmdCredential`
 - `Get-SavedSteamCmdCredential`
+- `New-SteamCmdLoginScript`
 - `Prompt-SteamCmdCredential`
 - `Resolve-SteamCmdDownloadCredential`
-- `Get-SteamCmdLoginArguments`
-- `ConvertTo-SteamCmdArgumentString`
 - `Invoke-SteamCmdCommand`
 - `Invoke-SteamCmdAuthenticatedOperation`
+- `Set-PrivateFileAcl`
+- `Test-SafeLaunchParameters`

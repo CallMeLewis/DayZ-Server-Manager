@@ -14,7 +14,7 @@ I am not claiming authorship of the original server manager script. This project
 
 - Download or update SteamCMD
 - Download or update DayZ server files
-- Download or update configured Workshop mods
+- Download or update configured Workshop mods (single SteamCMD session for all mods)
 - Start the DayZ server with default or user launch parameters
 - Stop tracked DayZ server processes
 - Manage client and server mod lists from the interactive menu
@@ -53,7 +53,9 @@ This file contains the persistent manager configuration:
 
 Stored in the current Windows user documents folder:
 
-`%USERPROFILE%\Documents\DayZ_Server\server-manager.state.json`
+Located in the system Documents folder (supports redirected or roaming profiles):
+
+`<Documents>\DayZ_Server\server-manager.state.json`
 
 This file contains the current runtime state used by the manager:
 
@@ -62,7 +64,12 @@ This file contains the current runtime state used by the manager:
 - Generated launch mod strings
 - Tracked DayZ server process metadata
 
-Saved SteamCMD account credentials are encrypted for the current Windows user. You can also choose a one-time account login that is kept only for the current PowerShell session.
+The state file is restricted to the current Windows user via file permissions.
+
+Saved SteamCMD account credentials (username and password) are encrypted using Windows DPAPI and can only be decrypted by the same Windows user on the same machine. You can also choose a one-time account login that is kept only for the current PowerShell session.
+
+Credentials are never passed on the SteamCMD command line. Instead, they are written to a temporary runscript file that is deleted immediately after use. See `STEAMCMD-CREDENTIALS.md` for full details.
+
 If Steam Guard is enabled, SteamCMD may require either Steam app confirmation or an email code during sign-in. When Steam Guard uses email, SteamCMD asks for that code in the same console window after the password step.
 
 ## Usage
