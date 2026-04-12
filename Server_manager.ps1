@@ -130,6 +130,8 @@ $loadMods = $null
 $script:startupBootstrapActive = $false
 $script:serverManagerVersion = '1.0.0'
 $script:lastServerActionSucceeded = $false
+$script:steamCmdSessionCredential = $null
+$global:steamCmdRetryCredentialResolver = { Request-SteamCmdRetryCredential }
 
 
 function Test-InteractiveMenuMode {
@@ -209,6 +211,7 @@ function Show-MainMenuStatus {
 		{
 			$serverDirectory = 'Not configured'
 		}
+	$steamLoginStatus = Get-SteamCmdCredentialStatus
 
 	Write-Host " Session Status"
 	Write-Host " ---------------------------------------"
@@ -220,6 +223,7 @@ function Show-MainMenuStatus {
 					Write-Host $serverStatus -ForegroundColor Yellow
 				}
 	Write-Host " Server directory: $serverDirectory"
+	Write-Host " Download login  : $steamLoginStatus"
 	Write-Host " ---------------------------------------"
 	Write-Host ""
 }
@@ -273,12 +277,7 @@ function Run-InteractiveSteamCmdSetup {
 					return $false
 				}
 
-			if (Ensure-SteamCmdCredential)
-				{
-					return $true
-				}
-
-			return $false
+			return $true
 		}
 	finally
 		{
@@ -518,6 +517,7 @@ function New-DefaultStateConfig {
 	return [pscustomobject]@{
 		steamCmdPath = $null
 		rootConfigPath = $rootConfigPath
+		lastSteamCmdSignInFailed = $false
 		serverSteamAuth = [pscustomobject]@{
 			usernameBlob = $null
 			passwordBlob = $null
@@ -573,6 +573,10 @@ function Get-StateConfig {
 			if ($state.PSObject.Properties.Name -contains 'trackedServers')
 				{
 					$normalizedState.trackedServers = @($state.trackedServers)
+				}
+			if ($state.PSObject.Properties.Name -contains 'lastSteamCmdSignInFailed')
+				{
+					$normalizedState.lastSteamCmdSignInFailed = [bool] $state.lastSteamCmdSignInFailed
 				}
 			if (($state.PSObject.Properties.Name -contains 'serverSteamAuth') -and $state.serverSteamAuth)
 				{
@@ -656,11 +660,52 @@ function Save-SteamCmdCredential {
 
 	$state = Get-StateConfig
 	$password = $Credential.GetNetworkCredential().Password
-	$state.serverSteamAuth = [pscustomobject]@{
+	$credentialState = [pscustomobject]@{
 		usernameBlob = Protect-StateSecret $Credential.UserName -AsPlainText
 		passwordBlob = Protect-StateSecret $password
 	}
+	if ($state.PSObject.Properties.Name -contains 'serverSteamAuth')
+		{
+			$state.serverSteamAuth = $credentialState
+		} else {
+			$state | Add-Member -NotePropertyName serverSteamAuth -NotePropertyValue $credentialState -Force
+		}
+	if ($state.PSObject.Properties.Name -contains 'lastSteamCmdSignInFailed')
+		{
+			$state.lastSteamCmdSignInFailed = $false
+		} else {
+			$state | Add-Member -NotePropertyName lastSteamCmdSignInFailed -NotePropertyValue $false -Force
+		}
 	Save-StateConfig $state
+}
+
+function Set-SteamCmdSessionCredential {
+	param([System.Management.Automation.PSCredential] $Credential)
+
+	$script:steamCmdSessionCredential = $Credential
+}
+
+function Get-SteamCmdSessionCredential {
+	return $script:steamCmdSessionCredential
+}
+
+function Clear-SteamCmdSessionCredential {
+	$script:steamCmdSessionCredential = $null
+}
+
+function Get-SteamCmdRetryCredential {
+	return (& $global:steamCmdRetryCredentialResolver)
+}
+
+function Set-SteamCmdRetryCredentialResolver {
+	param([scriptblock] $Resolver)
+
+	if ($Resolver)
+		{
+			$global:steamCmdRetryCredentialResolver = $Resolver
+		} else {
+			$global:steamCmdRetryCredentialResolver = { Request-SteamCmdRetryCredential }
+		}
 }
 
 function Get-SavedSteamCmdCredential {
@@ -682,12 +727,47 @@ function Get-SavedSteamCmdCredential {
 	return New-Object System.Management.Automation.PSCredential ($username, $securePassword)
 }
 
+function Clear-SteamCmdCredential {
+	$state = Get-StateConfig
+	$cleared = ($null -ne (Get-SteamCmdSessionCredential))
+	$hadFailureMarker = Test-SteamCmdLastSignInFailed
+
+	Clear-SteamCmdSessionCredential
+
+	if ($state -and ($state.PSObject.Properties.Name -contains 'serverSteamAuth'))
+		{
+			$state.PSObject.Properties.Remove('serverSteamAuth')
+			Save-StateConfig $state
+			$cleared = $true
+		}
+	Clear-SteamCmdLastSignInFailed
+	if ($hadFailureMarker)
+		{
+			$cleared = $true
+		}
+
+	return $cleared
+}
+
 function Prompt-SteamCmdCredential {
+	param(
+		[bool] $Persist = $true,
+		[switch] $PendingSave
+	)
+
 	Write-Host "Steam account setup"
 	Write-Host "-------------------"
 	Write-Host "Use a Steam account that owns DayZ."
-	Write-Host "These credentials are stored encrypted for this Windows user."
-	Write-Host "If Steam Guard prompts you, approve the sign-in and retry if needed."
+	if ($PendingSave)
+		{
+			Write-Host "These credentials will replace your saved login after a successful sign-in."
+		} elseif ($Persist) {
+			Write-Host "These credentials are stored encrypted for the current Windows user."
+		} else {
+			Write-Host "These credentials are used for this session only."
+		}
+	Write-Host "If Steam Guard prompts you, approve the sign-in in the Steam app."
+	Write-Host "If Steam Guard uses email, SteamCMD will ask for the code in this same window after you enter your password."
 	Write-Host ""
 
 	$username = Read-Host -Prompt 'Steam account name'
@@ -698,8 +778,18 @@ function Prompt-SteamCmdCredential {
 			return $null
 		}
 
-	$securePassword = Read-Host -Prompt 'Steam password' -AsSecureString
-	$password = (New-Object System.Management.Automation.PSCredential ('steam', $securePassword)).GetNetworkCredential().Password
+	$securePasswordInput = Read-Host -Prompt 'Steam password' -AsSecureString
+	if ($securePasswordInput -is [System.Security.SecureString])
+		{
+			$securePassword = $securePasswordInput
+			$password = (New-Object System.Management.Automation.PSCredential ('steam', $securePassword)).GetNetworkCredential().Password
+		} else {
+			$password = [string] $securePasswordInput
+			if (![string]::IsNullOrWhiteSpace($password))
+				{
+					$securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+				}
+		}
 	if ([string]::IsNullOrWhiteSpace($password))
 		{
 			Write-Host "No Steam password was entered."
@@ -708,22 +798,132 @@ function Prompt-SteamCmdCredential {
 		}
 
 	$credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-	Save-SteamCmdCredential $credential
+	if ($PendingSave)
+		{
+			# Defer the disk write to the caller — they will only save once
+			# the new credentials have actually authenticated successfully.
+			Set-SteamCmdSessionCredential $credential
+			Write-Host "New Steam credentials entered. They will be saved if sign-in succeeds."
+		} elseif ($Persist) {
+			# Clear any leftover one-time session credential so the status
+			# helper reports 'Saved' (not 'Session only') after this call —
+			# the saved copy will be loaded fresh from disk on demand.
+			Clear-SteamCmdSessionCredential
+			Save-SteamCmdCredential $credential
+			Write-Host "Saved encrypted Steam credentials for future downloads."
+		} else {
+			Set-SteamCmdSessionCredential $credential
+			Write-Host "Using Steam credentials for this session only."
+		}
 
-	Write-Host "Saved encrypted Steam credentials for future downloads."
 	Write-Host ""
 
 	return $credential
 }
 
 function Ensure-SteamCmdCredential {
-	$credential = Get-SavedSteamCmdCredential
+	return (Get-SavedSteamCmdCredential)
+}
+
+function Test-SteamCmdLastSignInFailed {
+	$state = Get-StateConfig
+	if (!$state -or !($state.PSObject.Properties.Name -contains 'lastSteamCmdSignInFailed'))
+		{
+			return $false
+		}
+
+	return [bool] $state.lastSteamCmdSignInFailed
+}
+
+function Set-SteamCmdLastSignInFailed {
+	param([bool] $Failed = $true)
+
+	$state = Get-StateConfig
+	if ($state.PSObject.Properties.Name -contains 'lastSteamCmdSignInFailed')
+		{
+			$state.lastSteamCmdSignInFailed = $Failed
+		} else {
+			$state | Add-Member -NotePropertyName lastSteamCmdSignInFailed -NotePropertyValue $Failed -Force
+		}
+
+	Save-StateConfig $state
+}
+
+function Clear-SteamCmdLastSignInFailed {
+	Set-SteamCmdLastSignInFailed -Failed:$false
+}
+
+function Get-SteamCmdCredentialStatus {
+	if (Test-SteamCmdLastSignInFailed)
+		{
+			return 'Last sign-in failed'
+		}
+
+	if (Get-SteamCmdSessionCredential)
+		{
+			return 'Session only'
+		}
+
+	if (Get-SavedSteamCmdCredential)
+		{
+			return 'Saved'
+		}
+
+	return 'Not configured'
+}
+
+function Get-ActiveSteamCmdCredential {
+	$sessionCredential = Get-SteamCmdSessionCredential
+	if ($sessionCredential)
+		{
+			return $sessionCredential
+		}
+
+	return (Get-SavedSteamCmdCredential)
+}
+
+function Request-SteamCmdDownloadCredential {
+	Write-Host "Download login required"
+	Write-Host "-----------------------"
+	Write-Host "Choose how to use your Steam login for this download."
+	Write-Host "1) Use login once"
+	Write-Host "2) Save login securely"
+	Write-Host "3) Cancel"
+	Write-Host ""
+
+	while ($true)
+		{
+			$select = Read-Host -Prompt 'Select an option'
+
+			switch ($select)
+				{
+					'1' { return (Prompt-SteamCmdCredential -Persist:$false) }
+					'2' { return (Prompt-SteamCmdCredential -Persist:$true) }
+					'3' {
+						Write-Host "Download was canceled."
+						Write-Host ""
+						return $null
+					}
+					default {
+						Write-Host "Select a number from the list (1-3)."
+						Write-Host ""
+					}
+				}
+		}
+}
+
+function Resolve-SteamCmdDownloadCredential {
+	$credential = Get-ActiveSteamCmdCredential
 	if ($credential)
 		{
 			return $credential
 		}
 
-	return (Prompt-SteamCmdCredential)
+	return (Request-SteamCmdDownloadCredential)
+}
+
+function Test-SteamCmdCredentialConfigured {
+	return ($null -ne (Get-SavedSteamCmdCredential))
 }
 
 function Get-ConfiguredWorkshopIds {
@@ -816,6 +1016,22 @@ function Set-GeneratedLaunchMods {
 	)
 
 	$state = Get-StateConfig
+	if (!$state.PSObject.Properties.Name -contains 'generatedLaunch' -or !$state.generatedLaunch)
+		{
+			$state | Add-Member -NotePropertyName generatedLaunch -NotePropertyValue ([pscustomobject]@{
+				mod = ''
+				serverMod = ''
+			}) -Force
+		}
+	elseif (!$state.generatedLaunch.PSObject.Properties.Name -contains 'mod')
+		{
+			$state.generatedLaunch | Add-Member -NotePropertyName mod -NotePropertyValue '' -Force
+		}
+	elseif (!$state.generatedLaunch.PSObject.Properties.Name -contains 'serverMod')
+		{
+			$state.generatedLaunch | Add-Member -NotePropertyName serverMod -NotePropertyValue '' -Force
+		}
+
 	$state.generatedLaunch.mod = ConvertTo-ModLaunchString $Mods
 	$state.generatedLaunch.serverMod = ConvertTo-ModLaunchString $ServerMods
 	Save-StateConfig $state
@@ -1330,6 +1546,70 @@ function ModManager_menu {
 }
 
 
+#Download login menu
+function DownloadLogin_menu {
+	Show-MenuHeader 'Download Login'
+
+	echo "Steam account required for DayZ server and mod downloads."
+	echo "Credentials are encrypted for the current Windows user."
+	echo "Use login once does not save your credentials."
+	echo "`n"
+
+	echo "1) Use login once"
+	echo "2) Save login securely"
+	echo "3) Clear saved login"
+	echo "4) Back to Main Menu"
+	echo "`n"
+
+	$select = Read-Host -Prompt 'Select an option'
+
+	switch ($select)
+		{
+			1 {
+				echo "`n"
+				[void](Prompt-SteamCmdCredential -Persist:$false)
+				Pause-BeforeMenu
+				Menu
+				Break
+			}
+
+			2 {
+				echo "`n"
+				[void](Prompt-SteamCmdCredential -Persist:$true)
+				Pause-BeforeMenu
+				Menu
+				Break
+			}
+
+			3 {
+				echo "`n"
+				if (Clear-SteamCmdCredential)
+					{
+						echo "Cleared the saved download login."
+					} else {
+						echo "No saved download login was found."
+					}
+				echo "`n"
+				Pause-BeforeMenu
+				Menu
+				Break
+			}
+
+			4 {
+				Menu
+				Break
+			}
+
+			Default {
+				echo "`n"
+				echo "Select a number from the list (1-4)."
+				echo "`n"
+				Break
+			}
+		}
+}
+
+
 #Main menu
 function Menu {
 	Show-MenuHeader (Get-ServerManagementTitle)
@@ -1341,7 +1621,8 @@ function Menu {
 	echo "4) Stop server"
 	echo "5) Remove / Uninstall"
 	echo "6) Manage mods"
-	echo "7) Exit"
+	echo "7) Configure download login"
+	echo "8) Exit"
 	echo "`n"
 
 	$select = Read-Host -Prompt 'Select an option'
@@ -1446,8 +1727,18 @@ function Menu {
                 Break
             }
 
-            #Close script
+            #Configure download login
             7 {
+				echo "`n"
+				echo "Configure download login selected."
+				echo "`n"
+				DownloadLogin_menu
+                
+                Break
+            }
+
+            #Close script
+            8 {
                 echo "`n"
 				echo "Exit selected."
 				echo "`n"
@@ -1461,7 +1752,7 @@ function Menu {
             Default {
                 
                 echo "`n"
-				echo "Select a number from the list (1-7)."
+				echo "Select a number from the list (1-8)."
 				echo "`n"
 									
 				Pause-BeforeMenu
@@ -1481,7 +1772,9 @@ function SteamCMDFolder {
 			$recommendedFolder = Get-RecommendedSteamCmdPath
 
 			#Prompt user to insert path to SteamCMD folder
+			Write-Host ""
 			$script:folder = Read-Host -Prompt "Enter the SteamCMD folder path, or press Enter to use $recommendedFolder"
+			Write-Host ""
 			$folder = $script:folder
 
 			#Check if path was really inserted
@@ -1489,26 +1782,26 @@ function SteamCMDFolder {
 				{
 					$script:folder = $recommendedFolder
 					$folder = $script:folder
-					echo "`n"
 					echo "Using the recommended SteamCMD folder: $folder"
 					echo "`n"
 				}
-			
-			echo "`n"
+
 			echo "SteamCMD folder: $folder"
 			echo "`n"
-			
+
 			#Create SteamCMD folder if it doesn't exist
 			if (!(Test-Path "$folder"))
 				{
 					echo "Created the SteamCMD folder."
 					echo "`n"
-					
+
 					mkdir "$folder" >$null
 				}
 
 			#Prompt user to save path to SteamCMD folder for future use
+			Write-Host ""
 			$saveFolder = Read-Host -Prompt 'Save this path for future use? (yes/no)'
+			Write-Host ""
 
 			if ( ($saveFolder -eq "yes") -or ($saveFolder -eq "y")) 
 				{ 	
@@ -1545,12 +1838,12 @@ function SteamCMDFolder {
 #SteamCMD exe
 function SteamCMDExe {
 	#Check if SteamCMD.exe exist
-			if (!(Test-Path "$folder\steamcmd.exe")) 
+			if (!(Test-Path "$folder\steamcmd.exe"))
 		{
-			echo "`n"
+			Write-Host ""
 			#Prompt user to download and install SteamCMD
 			$steamInst = Read-Host -Prompt "'$folder\steamcmd.exe' was not found. Download and install SteamCMD to this folder? (yes/no)"
-			echo "`n"
+			Write-Host ""
 			
 			if ( ($steamInst -eq "yes") -or ($steamInst -eq "y")) 
 				{ 
@@ -1649,7 +1942,14 @@ function SteamCMDExe {
 }
 
 function Get-SteamCmdLoginArguments {
-	$credential = Ensure-SteamCmdCredential
+	param(
+		[System.Management.Automation.PSCredential] $Credential
+	)
+
+	if (!$Credential)
+		{
+			$credential = Get-ActiveSteamCmdCredential
+		}
 	if (!$credential)
 		{
 			throw [System.InvalidOperationException] 'Steam account credentials are required to download and update DayZ server files and mods.'
@@ -1695,24 +1995,64 @@ function Resolve-DayZServerUninstallState {
 	return $result
 }
 
+function ConvertTo-SteamCmdArgumentString {
+	param([string[]] $Arguments)
+
+	if (-not $Arguments)
+		{
+			return ''
+		}
+
+	$parts = @()
+	foreach ($arg in $Arguments)
+		{
+			$value = [string] $arg
+			if ($value -eq '')
+				{
+					$parts += '""'
+					continue
+				}
+			if ($value -notmatch '[\s"]')
+				{
+					$parts += $value
+					continue
+				}
+			$escaped = $value -replace '"', '\"'
+			$parts += '"' + $escaped + '"'
+		}
+
+	return ($parts -join ' ')
+}
+
 function Invoke-SteamCmdCommand {
 	param([string[]] $Arguments)
 
-	$output = & "$folder\steamcmd.exe" @Arguments 2>&1
-	$exitCode = $LASTEXITCODE
-	$lines = @()
+	# Launch steamcmd via System.Diagnostics.Process so it inherits the
+	# parent's console handles directly. UseShellExecute=$false with no
+	# Redirect* flags hands the child the real stdin/stdout/stderr at the
+	# OS level, so PowerShell's success stream never sees the output. This
+	# is required because callers do `$proc = Invoke-SteamCmdCommand(...)` —
+	# any stdout we routed through PowerShell would be swallowed by that
+	# outer capture and the Steam Guard prompt would never reach the user.
+	#
+	# We use the legacy Arguments string (with manual escaping) instead of
+	# ArgumentList because ArgumentList is .NET Core 2.1+ only and is not
+	# available under Windows PowerShell 5.1 / .NET Framework.
+	$psi = [System.Diagnostics.ProcessStartInfo]::new()
+	$psi.FileName = "$folder\steamcmd.exe"
+	$psi.UseShellExecute = $false
+	$psi.CreateNoWindow = $false
+	$psi.Arguments = ConvertTo-SteamCmdArgumentString $Arguments
 
-	foreach ($entry in @($output))
-		{
-			$line = [string] $entry
-			$lines += $line
-			echo $line
-		}
+	$proc = [System.Diagnostics.Process]::Start($psi)
+	$proc.WaitForExit()
+	$exitCode = $proc.ExitCode
+	$proc.Dispose()
 
 	return [pscustomobject]@{
 		ExitCode = $exitCode
-		Output   = ($lines -join [Environment]::NewLine)
-		StdOut   = ($lines -join [Environment]::NewLine)
+		Output   = ''
+		StdOut   = ''
 		StdErr   = ''
 	}
 }
@@ -1724,21 +2064,168 @@ function Write-SteamCmdFailureGuidance {
 		[string] $Operation
 	)
 
-	if (($ExitCode -eq 5) -or ($Output -match 'Invalid Password|Login Failure|Steam Guard|two-factor|Two-factor'))
+	if (Test-SteamCmdSignInFailure -ExitCode $ExitCode -Output $Output)
 		{
-			echo "SteamCMD sign-in failed for the saved Steam account."
-			echo "If Steam Guard is enabled, approve the sign-in and retry."
-			echo "Re-enter your Steam credentials if your password has changed."
-			echo "`n"
+			Write-Host "SteamCMD sign-in failed for the saved Steam account."
+			Write-Host "If Steam Guard is enabled, approve the sign-in in the Steam app and retry."
+			Write-Host "If Steam Guard uses email, SteamCMD will ask for the code in this same window after you enter your password."
+			Write-Host "Re-enter your Steam credentials if your password has changed."
+			Write-Host ""
 			return
 		}
 
 	if ($Output -match 'No subscription')
 		{
-			echo "Steam denied access to DayZ Server for the saved account."
-			echo "Check that this Steam account owns DayZ and approve any Steam Guard request, then retry."
-			echo "`n"
+			Write-Host "Steam denied access to DayZ Server for the saved account."
+			Write-Host "Check that this Steam account owns DayZ and complete any Steam Guard app approval or email code check, then retry."
+			Write-Host ""
 		}
+}
+
+function Test-SteamCmdSignInFailure {
+	param(
+		[int] $ExitCode,
+		[string] $Output
+	)
+
+	return (($ExitCode -eq 5) -or ($Output -match 'Invalid Password|Login Failure|Steam Guard|two-factor|Two-factor'))
+}
+
+function Request-SteamCmdRetryCredential {
+	Write-Host "Steam sign-in failed"
+	Write-Host "-------------------"
+	Write-Host "Choose how to retry the Steam login."
+	Write-Host "If Steam Guard uses email, SteamCMD will ask for the code in this same window after you enter your password."
+	Write-Host "1) Re-enter login once"
+	Write-Host "2) Clear saved login and re-enter"
+	Write-Host "3) Cancel"
+	Write-Host ""
+
+	while ($true)
+		{
+			$select = Read-Host -Prompt 'Select a retry option'
+
+			switch ($select)
+				{
+					'1' {
+						$credential = Prompt-SteamCmdCredential -Persist:$false
+						if ($credential)
+							{
+								return [pscustomobject]@{
+									Credential = $credential
+									SaveOnSuccess = $false
+								}
+							}
+
+						return $null
+					}
+					'2' {
+						$credential = Prompt-SteamCmdCredential -Persist:$false -PendingSave
+						if ($credential)
+							{
+								return [pscustomobject]@{
+									Credential = $credential
+									SaveOnSuccess = $true
+								}
+							}
+
+						return $null
+					}
+					'3' {
+						Write-Host "Retry was canceled."
+						Write-Host ""
+						return $null
+					}
+					default {
+						Write-Host "Select a number from the list (1-3)."
+						Write-Host ""
+					}
+				}
+		}
+}
+
+function Invoke-SteamCmdAuthenticatedOperation {
+	param(
+		[string] $Operation,
+		[string[]] $Arguments
+	)
+
+	$credential = Resolve-SteamCmdDownloadCredential
+	if (!$credential)
+		{
+			echo "Steam download login was not configured."
+			echo "Open Configure download login and try again."
+			echo "`n"
+			return $null
+		}
+
+	$loginArgs = Get-SteamCmdLoginArguments -Credential $credential
+	$proc = Invoke-SteamCmdCommand ($loginArgs + $Arguments)
+	if ($proc.ExitCode -eq 0)
+		{
+			Clear-SteamCmdLastSignInFailed
+			return $proc
+		}
+
+	if (Test-SteamCmdSignInFailure -ExitCode $proc.ExitCode -Output $proc.Output)
+		{
+			Set-SteamCmdLastSignInFailed
+			Write-SteamCmdFailureGuidance $proc.ExitCode $proc.Output $Operation
+
+			$previousSessionCredential = Get-SteamCmdSessionCredential
+			$retrySelection = Get-SteamCmdRetryCredential
+			if ($retrySelection -is [System.Management.Automation.PSCredential])
+				{
+					$retryCredential = $retrySelection
+					$saveRetryCredentialOnSuccess = $false
+				} else {
+					$retryCredential = $retrySelection.Credential
+					$saveRetryCredentialOnSuccess = [bool] $retrySelection.SaveOnSuccess
+				}
+			if (!$retryCredential)
+				{
+					echo "SteamCMD $Operation failed with exit code $($proc.ExitCode)."
+					return $proc
+				}
+
+			$retryLoginArgs = Get-SteamCmdLoginArguments -Credential $retryCredential
+			$retryProc = Invoke-SteamCmdCommand ($retryLoginArgs + $Arguments)
+			if ($retryProc.ExitCode -eq 0)
+				{
+					if ($saveRetryCredentialOnSuccess)
+						{
+							Save-SteamCmdCredential $retryCredential
+							# The retry prompt set the session credential
+							# as a side effect of -Persist:$false. Clear
+							# it now so the status helper reports 'Saved'
+							# (not 'Session only') after the successful
+							# replacement.
+							Clear-SteamCmdSessionCredential
+						}
+					Clear-SteamCmdLastSignInFailed
+					return $retryProc
+				}
+
+			if ($previousSessionCredential)
+				{
+					Set-SteamCmdSessionCredential $previousSessionCredential
+				} else {
+					Clear-SteamCmdSessionCredential
+				}
+
+			if (Test-SteamCmdSignInFailure -ExitCode $retryProc.ExitCode -Output $retryProc.Output)
+				{
+					Set-SteamCmdLastSignInFailed
+					Write-SteamCmdFailureGuidance $retryProc.ExitCode $retryProc.Output $Operation
+				} else {
+					Clear-SteamCmdLastSignInFailed
+				}
+
+			echo "SteamCMD $Operation failed with exit code $($retryProc.ExitCode)."
+			return $retryProc
+		}
+
+	return $proc
 }
 
 #Steam login
@@ -1763,11 +2250,9 @@ function ServerUpdate {
 	echo "`n"
 
 	#Login to SteamCMD and update DayZ server app
-	$loginArgs = Get-SteamCmdLoginArguments
-	$proc = Invoke-SteamCmdCommand ($loginArgs + @('+app_update', $steamApp, 'validate', '+quit'))
+	$proc = Invoke-SteamCmdAuthenticatedOperation -Operation 'server update' -Arguments @('+app_update', $steamApp, 'validate', '+quit')
 	if ($proc.ExitCode -ne 0)
 		{
-			Write-SteamCmdFailureGuidance $proc.ExitCode $proc.Output 'server update'
 			echo "SteamCMD server update failed with exit code $($proc.ExitCode)."
 			return
 		}
@@ -1851,11 +2336,9 @@ function ModsUpdate {
 							echo "`n"
 
 							#Login to SteamCMD and download/update selected mods
-							$loginArgs = Get-SteamCmdLoginArguments
-							$proc = Invoke-SteamCmdCommand ($loginArgs + @('+runscript', "$tempModList"))
+							$proc = Invoke-SteamCmdAuthenticatedOperation -Operation 'mod update' -Arguments @('+runscript', "$tempModList")
 							if ($proc.ExitCode -ne 0)
 								{
-									Write-SteamCmdFailureGuidance $proc.ExitCode $proc.Output 'mod update'
 									echo "SteamCMD workshop update failed with exit code $($proc.ExitCode)."
 									Remove-Item -Path "$tempModList" -Force -ErrorAction SilentlyContinue
 									return
@@ -1921,11 +2404,9 @@ function ModsUpdate {
 							echo "`n"
 
 							#Login to SteamCMD and download/update selected server mods
-							$loginArgs = Get-SteamCmdLoginArguments
-							$proc = Invoke-SteamCmdCommand ($loginArgs + @('+runscript', "$tempModListServer"))
+							$proc = Invoke-SteamCmdAuthenticatedOperation -Operation 'server mod update' -Arguments @('+runscript', "$tempModListServer")
 							if ($proc.ExitCode -ne 0)
 								{
-									Write-SteamCmdFailureGuidance $proc.ExitCode $proc.Output 'server mod update'
 									echo "SteamCMD workshop update failed with exit code $($proc.ExitCode)."
 									Remove-Item -Path "$tempModListServer" -Force -ErrorAction SilentlyContinue
 									return

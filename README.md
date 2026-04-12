@@ -24,6 +24,7 @@ I am not claiming authorship of the original server manager script. This project
 - PowerShell 4 or newer
 - Windows 10, Windows Server 2012 R2, or newer
 - SteamCMD
+- A Steam account that owns DayZ for server and Workshop downloads
 
 ## Main Files
 
@@ -56,10 +57,12 @@ Stored in the current Windows user documents folder:
 This file contains the current runtime state used by the manager:
 
 - SteamCMD path
+- Saved Steam download login state
 - Generated launch mod strings
 - Tracked DayZ server process metadata
 
-Workshop downloads and server updates use anonymous SteamCMD login only. Private or account-restricted Workshop content is not supported by this automation path.
+Saved Steam download credentials are encrypted for the current Windows user. You can also choose a one-time login that is kept only for the current PowerShell session.
+If Steam Guard is enabled, SteamCMD may require either Steam app confirmation or an email code during sign-in. When Steam Guard uses email, SteamCMD asks for that code in the same console window after the password step.
 
 ## Usage
 
@@ -68,6 +71,16 @@ Workshop downloads and server updates use anonymous SteamCMD login only. Private
 ```powershell
 .\Server_manager.ps1
 ```
+
+On first run, the script only sets up SteamCMD. It does not ask for Steam credentials during startup.
+
+When you choose `Update server` or `Update mods`, the manager will:
+
+- use the saved download login if one is already configured
+- otherwise prompt you to `Use login once` or `Save login securely`
+- let you clear the saved download login from `Configure download login`
+
+If SteamCMD sign-in fails, the manager shows guided retry options and marks the main menu status as `Last sign-in failed` until the login is corrected.
 
 ### Command Line Parameters
 
