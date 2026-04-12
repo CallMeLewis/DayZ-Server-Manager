@@ -31,6 +31,7 @@ I am not claiming authorship of the original server manager script. This project
 - `Server_manager.ps1`: main script
 - `Start_Server_Manager.cmd`: double-click launcher for File Explorer use
 - `server-manager.config.json`: root config stored next to the script
+- `STEAMCMD-CREDENTIALS.md`: explains how SteamCMD credentials are stored and passed to SteamCMD
 
 ## Configuration
 
