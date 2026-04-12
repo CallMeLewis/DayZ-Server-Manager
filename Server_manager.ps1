@@ -894,7 +894,7 @@ function Convert-LegacyUsernameBlob {
 			return $null
 		}
 
-	# Try DPAPI decryption first — if it works, no migration needed.
+	# Try DPAPI decryption first - if it works, no migration needed.
 	$dpapi = Unprotect-StateSecret $Blob
 	if ($dpapi)
 		{
@@ -912,7 +912,7 @@ function Convert-LegacyUsernameBlob {
 		}
 	catch
 		{
-			# Not valid Base64 either — blob is corrupted.
+			# Not valid Base64 either - blob is corrupted.
 		}
 
 	return $null
@@ -1068,13 +1068,13 @@ function Prompt-SteamCmdCredential {
 	$credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
 	if ($PendingSave)
 		{
-			# Defer the disk write to the caller — they will only save once
+			# Defer the disk write to the caller - they will only save once
 			# the new credentials have actually authenticated successfully.
 			Set-SteamCmdSessionCredential $credential
 			Write-Host "New Steam credentials entered. They will be saved if sign-in succeeds."
 		} elseif ($Persist) {
 			# Clear any leftover one-time session credential so the status
-			# helper reports 'Saved' (not 'Session only') after this call —
+			# helper reports 'Saved' (not 'Session only') after this call -
 			# the saved copy will be loaded fresh from disk on demand.
 			Clear-SteamCmdSessionCredential
 			Save-SteamCmdCredential $credential
@@ -2358,7 +2358,7 @@ function SteamCMDExe {
 									Write-Host ""
 					           }
 
-					#Run SteamCMD self-update before signature check — the
+					#Run SteamCMD self-update before signature check - the
 					#bootstrapper from the zip is not fully signed until it
 					#updates itself on first run.
 					Write-Host "Running SteamCMD self-update..."
@@ -2374,7 +2374,7 @@ function SteamCMDExe {
 							if (!(Test-ExpectedSigner $steamCmdExe 'Valve Corp\.'))
 								{
 									Write-Host "steamcmd.exe does not have a valid Valve signature after self-update." -ForegroundColor Yellow
-									Write-Host "Proceeding anyway — verify the file manually if concerned."
+									Write-Host "Proceeding anyway - verify the file manually if concerned."
 									Write-Host ""
 								}
 						}
@@ -2516,7 +2516,7 @@ function Invoke-SteamCmdCommand {
 	# parent's console handles directly. UseShellExecute=$false with no
 	# Redirect* flags hands the child the real stdin/stdout/stderr at the
 	# OS level, so PowerShell's success stream never sees the output. This
-	# is required because callers do `$proc = Invoke-SteamCmdCommand(...)` —
+	# is required because callers do `$proc = Invoke-SteamCmdCommand(...)` -
 	# any stdout we routed through PowerShell would be swallowed by that
 	# outer capture and the Steam Guard prompt would never reach the user.
 	#
