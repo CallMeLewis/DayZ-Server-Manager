@@ -1,10 +1,10 @@
 <# 
 .SYNOPSIS 
-	Script for download and management of DayZ server and mods.
+	Script for downloading and managing a DayZ server and its mods.
 	
 .DESCRIPTION 
-	This script can be used for download of SteamCMD, DayZ server data and DayZ server mod data.
-	It can also run DayZ server with specified user configuration (launch parameters, server configuration file).
+	This script downloads and manages SteamCMD, DayZ server files, and DayZ server mod files.
+	It can also start the DayZ server with a specified configuration, including launch parameters and the server configuration file.
 	
 .NOTES 
 	File Name  : Server_manager.ps1 
@@ -16,79 +16,79 @@
 	https://community.bistudio.com/wiki/...
 
 .EXAMPLE 
-	Open Main menu:
+	Open the main menu:
 	 C:\foo> .\Server_manager.ps1
  
 .EXAMPLE 
-	Update server:
+	Update the server:
 	 C:\foo> .\Server_manager.ps1 -update server
 	 
 .EXAMPLE 
-	Update both server and mods and start server with user config:
+	Update both the server and mods, then start the server with saved launch parameters:
 	 C:\foo> .\Server_manager.ps1 -u all -s start -lp user
 	 
 .EXAMPLE 
-	Stop running servers:
+	Stop tracked running servers:
 	 C:\foo> .\Server_manager.ps1 -s stop
 	 
 .PARAMETER update 
-   Update server and/or mods to latest version. Can be substituted by -u
+   Update the server and/or mods to the latest version. Can be substituted by -u
    
    Use values:
-   server - updates DayZ server data
-   mod - updates selected mod data
-   all - updates both DayZ server and mod data
+   server - updates DayZ server files
+   mod - updates selected mod files
+   all - updates both DayZ server files and mod files
    
 .PARAMETER u
-   Update server and/or mods to latest version. Can be substituted by -update
+   Update the server and/or mods to the latest version. Can be substituted by -update
    
    Use values:
-   server - updates DayZ server data
-   mod - updates selected mod data
-   all - updates both DayZ server and mod data
+   server - updates DayZ server files
+   mod - updates selected mod files
+   all - updates both DayZ server files and mod files
    
 .PARAMETER server 
-   Start or stop DayZ server. Can be substituted by -s
-   Can be combined with -launchParam or -lp parameters.
+   Start or stop the DayZ server. Can be substituted by -s
+   Can be combined with -launchParam or -lp.
    
    Use values:
-   start - start DayZ server
-   stop - stop running DayZ servers
+   start - starts the DayZ server
+   stop - stops tracked running DayZ servers
    
 .PARAMETER s
-   Start or stop DayZ server. Can be substituted by -server
-   Can be combined with -launchParam or -lp parameters.
+   Start or stop the DayZ server. Can be substituted by -server
+   Can be combined with -launchParam or -lp.
    
    Use values:
-   start - start DayZ server
-   stop - stop running DayZ servers
+   start - starts the DayZ server
+   stop - stops tracked running DayZ servers
    
 .PARAMETER launchParam
-   Choose if Dayz server should start with default or user launch parameters. Can be substituted by -lp
-   Must be used in combination with -server or -s parameters.
-   Default value is used if not specified otherwise.
+   Choose whether the DayZ server should start with default or saved launch parameters. Can be substituted by -lp
+   Must be used with -server or -s.
+   The default value is used unless another value is specified.
    
    Use values:
-   default - start DayZ server with default launch parameters
-   user - start DayZ server with user launch parameters
+   default - starts the DayZ server with default launch parameters
+   user - starts the DayZ server with saved launch parameters
    
 .PARAMETER lp
-   Choose if Dayz server should start with default or user launch parameters. Can be substituted by -launchParam
-   Must be used in combination with -server or -s parameters.
-   Default value is used if not specified otherwise.
+   Choose whether the DayZ server should start with default or saved launch parameters. Can be substituted by -launchParam
+   Must be used with -server or -s.
+   The default value is used unless another value is specified.
    
    Use values:
-   default - start DayZ server with default launch parameters
-   user - start DayZ server with user launch parameters
+   default - starts the DayZ server with default launch parameters
+   user - starts the DayZ server with saved launch parameters
 
 .PARAMETER app 
    Select which Steam server application you want to use.
    Can be combined with all other parameters.
-   Default value "stable" is used if not specified.
+   The default value is "stable" if not specified.
    
    Use values:
-   stable - Stable Steam server app
-   exp - Experimental Steam server app
+   stable - stable Steam server app
+   exp - experimental Steam server app
   
 #> 
 
@@ -130,6 +130,8 @@ $loadMods = $null
 $script:startupBootstrapActive = $false
 $script:serverManagerVersion = '1.0.0'
 $script:lastServerActionSucceeded = $false
+$script:steamCmdSessionCredential = $null
+$global:steamCmdRetryCredentialResolver = { Request-SteamCmdRetryCredential }
 
 
 function Test-InteractiveMenuMode {
@@ -209,6 +211,7 @@ function Show-MainMenuStatus {
 		{
 			$serverDirectory = 'Not configured'
 		}
+	$steamLoginStatus = Get-SteamCmdCredentialStatus
 
 	Write-Host " Session Status"
 	Write-Host " ---------------------------------------"
@@ -220,6 +223,7 @@ function Show-MainMenuStatus {
 					Write-Host $serverStatus -ForegroundColor Yellow
 				}
 	Write-Host " Server directory: $serverDirectory"
+	Write-Host " Download login  : $steamLoginStatus"
 	Write-Host " ---------------------------------------"
 	Write-Host ""
 }
@@ -245,12 +249,8 @@ function Pause-BeforeMenu {
 		}
 }
 
-function Prompt-SteamCmdLoginMode {
-	throw [System.NotSupportedException] 'Steam account login automation is no longer supported. SteamCMD automation is anonymous-only.'
-}
-
-function Use-SavedSteamCmdLoginMode {
-	return $true
+function Get-RecommendedSteamCmdPath {
+	return 'C:\SteamCMD'
 }
 
 function Run-InteractiveSteamCmdSetup {
@@ -259,7 +259,12 @@ function Run-InteractiveSteamCmdSetup {
 	try
 		{
 			Show-MenuHeader 'SteamCMD Setup'
-			Write-Host "SteamCMD setup is required before continuing."
+			$recommendedPath = Get-RecommendedSteamCmdPath
+			Write-Host "SteamCMD is required to download and update your DayZ server files."
+			Write-Host "Choose a folder where SteamCMD should be installed."
+			Write-Host "Recommended folder: $recommendedPath"
+			Write-Host "Press Enter to use the recommended folder, or type a different path."
+			Write-Host "A Steam account that owns DayZ is required for downloads and updates."
 			Write-Host ""
 
 			if (!(SteamCMDFolder))
@@ -272,12 +277,7 @@ function Run-InteractiveSteamCmdSetup {
 					return $false
 				}
 
-			if (Use-SavedSteamCmdLoginMode)
-				{
-					return $true
-				}
-
-			return (Prompt-SteamCmdLoginMode)
+			return $true
 		}
 	finally
 		{
@@ -517,6 +517,11 @@ function New-DefaultStateConfig {
 	return [pscustomobject]@{
 		steamCmdPath = $null
 		rootConfigPath = $rootConfigPath
+		lastSteamCmdSignInFailed = $false
+		serverSteamAuth = [pscustomobject]@{
+			usernameBlob = $null
+			passwordBlob = $null
+		}
 		generatedLaunch = [pscustomobject]@{
 			mod = ''
 			serverMod = ''
@@ -543,7 +548,7 @@ function Get-StateConfig {
 			return $state
 		}
 
-	if (($state.PSObject.Properties.Name -contains 'steamCmdLoginMode') -or ($state.PSObject.Properties.Name -contains 'steamCredentials'))
+	if (($state.PSObject.Properties.Name -contains 'steamCmdLoginMode') -or ($state.PSObject.Properties.Name -contains 'steamCredentials') -or (-not ($state.PSObject.Properties.Name -contains 'serverSteamAuth')))
 		{
 			$normalizedState = New-DefaultStateConfig
 			if ($state.PSObject.Properties.Name -contains 'steamCmdPath')
@@ -569,6 +574,21 @@ function Get-StateConfig {
 				{
 					$normalizedState.trackedServers = @($state.trackedServers)
 				}
+			if ($state.PSObject.Properties.Name -contains 'lastSteamCmdSignInFailed')
+				{
+					$normalizedState.lastSteamCmdSignInFailed = [bool] $state.lastSteamCmdSignInFailed
+				}
+			if (($state.PSObject.Properties.Name -contains 'serverSteamAuth') -and $state.serverSteamAuth)
+				{
+					if ($state.serverSteamAuth.PSObject.Properties.Name -contains 'usernameBlob')
+						{
+							$normalizedState.serverSteamAuth.usernameBlob = $state.serverSteamAuth.usernameBlob
+						}
+					if ($state.serverSteamAuth.PSObject.Properties.Name -contains 'passwordBlob')
+						{
+							$normalizedState.serverSteamAuth.passwordBlob = $state.serverSteamAuth.passwordBlob
+						}
+				}
 
 			Save-StateConfig $normalizedState
 			return $normalizedState
@@ -581,6 +601,329 @@ function Save-StateConfig {
 	param($State)
 
 	Save-JsonFile $stateConfigPath $State
+}
+
+function Protect-StateSecret {
+	param(
+		[string] $Value,
+		[switch] $AsPlainText
+	)
+
+	if ([string]::IsNullOrWhiteSpace($Value))
+		{
+			return $null
+		}
+
+	if ($AsPlainText)
+		{
+			return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Value))
+		}
+
+	$secureValue = ConvertTo-SecureString $Value -AsPlainText -Force
+	return ConvertFrom-SecureString $secureValue
+}
+
+function Unprotect-StateSecret {
+	param(
+		[string] $Blob,
+		[switch] $AsPlainText
+	)
+
+	if ([string]::IsNullOrWhiteSpace($Blob))
+		{
+			return $null
+		}
+
+	try
+		{
+			if ($AsPlainText)
+				{
+					return [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Blob))
+				}
+
+			$secureValue = ConvertTo-SecureString $Blob
+			return (New-Object System.Management.Automation.PSCredential ('state', $secureValue)).GetNetworkCredential().Password
+		}
+	catch
+		{
+			return $null
+		}
+}
+
+function Save-SteamCmdCredential {
+	param([System.Management.Automation.PSCredential] $Credential)
+
+	if (!$Credential)
+		{
+			return
+		}
+
+	$state = Get-StateConfig
+	$password = $Credential.GetNetworkCredential().Password
+	$credentialState = [pscustomobject]@{
+		usernameBlob = Protect-StateSecret $Credential.UserName -AsPlainText
+		passwordBlob = Protect-StateSecret $password
+	}
+	if ($state.PSObject.Properties.Name -contains 'serverSteamAuth')
+		{
+			$state.serverSteamAuth = $credentialState
+		} else {
+			$state | Add-Member -NotePropertyName serverSteamAuth -NotePropertyValue $credentialState -Force
+		}
+	if ($state.PSObject.Properties.Name -contains 'lastSteamCmdSignInFailed')
+		{
+			$state.lastSteamCmdSignInFailed = $false
+		} else {
+			$state | Add-Member -NotePropertyName lastSteamCmdSignInFailed -NotePropertyValue $false -Force
+		}
+	Save-StateConfig $state
+}
+
+function Set-SteamCmdSessionCredential {
+	param([System.Management.Automation.PSCredential] $Credential)
+
+	$script:steamCmdSessionCredential = $Credential
+}
+
+function Get-SteamCmdSessionCredential {
+	return $script:steamCmdSessionCredential
+}
+
+function Clear-SteamCmdSessionCredential {
+	$script:steamCmdSessionCredential = $null
+}
+
+function Get-SteamCmdRetryCredential {
+	return (& $global:steamCmdRetryCredentialResolver)
+}
+
+function Set-SteamCmdRetryCredentialResolver {
+	param([scriptblock] $Resolver)
+
+	if ($Resolver)
+		{
+			$global:steamCmdRetryCredentialResolver = $Resolver
+		} else {
+			$global:steamCmdRetryCredentialResolver = { Request-SteamCmdRetryCredential }
+		}
+}
+
+function Get-SavedSteamCmdCredential {
+	$state = Get-StateConfig
+	if (!$state -or !($state.PSObject.Properties.Name -contains 'serverSteamAuth') -or !$state.serverSteamAuth)
+		{
+			return $null
+		}
+
+	$username = Unprotect-StateSecret $state.serverSteamAuth.usernameBlob -AsPlainText
+	$password = Unprotect-StateSecret $state.serverSteamAuth.passwordBlob
+
+	if ([string]::IsNullOrWhiteSpace($username) -or [string]::IsNullOrWhiteSpace($password))
+		{
+			return $null
+		}
+
+	$securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+	return New-Object System.Management.Automation.PSCredential ($username, $securePassword)
+}
+
+function Clear-SteamCmdCredential {
+	$state = Get-StateConfig
+	$cleared = ($null -ne (Get-SteamCmdSessionCredential))
+	$hadFailureMarker = Test-SteamCmdLastSignInFailed
+
+	Clear-SteamCmdSessionCredential
+
+	if ($state -and ($state.PSObject.Properties.Name -contains 'serverSteamAuth'))
+		{
+			$state.PSObject.Properties.Remove('serverSteamAuth')
+			Save-StateConfig $state
+			$cleared = $true
+		}
+	Clear-SteamCmdLastSignInFailed
+	if ($hadFailureMarker)
+		{
+			$cleared = $true
+		}
+
+	return $cleared
+}
+
+function Prompt-SteamCmdCredential {
+	param(
+		[bool] $Persist = $true,
+		[switch] $PendingSave
+	)
+
+	Write-Host "Steam account setup"
+	Write-Host "-------------------"
+	Write-Host "Use a Steam account that owns DayZ."
+	if ($PendingSave)
+		{
+			Write-Host "These credentials will replace your saved login after a successful sign-in."
+		} elseif ($Persist) {
+			Write-Host "These credentials are stored encrypted for the current Windows user."
+		} else {
+			Write-Host "These credentials are used for this session only."
+		}
+	Write-Host "If Steam Guard prompts you, approve the sign-in in the Steam app."
+	Write-Host "If Steam Guard uses email, SteamCMD will ask for the code in this same window after you enter your password."
+	Write-Host ""
+
+	$username = Read-Host -Prompt 'Steam account name'
+	if ([string]::IsNullOrWhiteSpace($username))
+		{
+			Write-Host "No Steam account name was entered."
+			Write-Host ""
+			return $null
+		}
+
+	$securePasswordInput = Read-Host -Prompt 'Steam password' -AsSecureString
+	if ($securePasswordInput -is [System.Security.SecureString])
+		{
+			$securePassword = $securePasswordInput
+			$password = (New-Object System.Management.Automation.PSCredential ('steam', $securePassword)).GetNetworkCredential().Password
+		} else {
+			$password = [string] $securePasswordInput
+			if (![string]::IsNullOrWhiteSpace($password))
+				{
+					$securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+				}
+		}
+	if ([string]::IsNullOrWhiteSpace($password))
+		{
+			Write-Host "No Steam password was entered."
+			Write-Host ""
+			return $null
+		}
+
+	$credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
+	if ($PendingSave)
+		{
+			# Defer the disk write to the caller — they will only save once
+			# the new credentials have actually authenticated successfully.
+			Set-SteamCmdSessionCredential $credential
+			Write-Host "New Steam credentials entered. They will be saved if sign-in succeeds."
+		} elseif ($Persist) {
+			# Clear any leftover one-time session credential so the status
+			# helper reports 'Saved' (not 'Session only') after this call —
+			# the saved copy will be loaded fresh from disk on demand.
+			Clear-SteamCmdSessionCredential
+			Save-SteamCmdCredential $credential
+			Write-Host "Saved encrypted Steam credentials for future downloads."
+		} else {
+			Set-SteamCmdSessionCredential $credential
+			Write-Host "Using Steam credentials for this session only."
+		}
+
+	Write-Host ""
+
+	return $credential
+}
+
+function Ensure-SteamCmdCredential {
+	return (Get-SavedSteamCmdCredential)
+}
+
+function Test-SteamCmdLastSignInFailed {
+	$state = Get-StateConfig
+	if (!$state -or !($state.PSObject.Properties.Name -contains 'lastSteamCmdSignInFailed'))
+		{
+			return $false
+		}
+
+	return [bool] $state.lastSteamCmdSignInFailed
+}
+
+function Set-SteamCmdLastSignInFailed {
+	param([bool] $Failed = $true)
+
+	$state = Get-StateConfig
+	if ($state.PSObject.Properties.Name -contains 'lastSteamCmdSignInFailed')
+		{
+			$state.lastSteamCmdSignInFailed = $Failed
+		} else {
+			$state | Add-Member -NotePropertyName lastSteamCmdSignInFailed -NotePropertyValue $Failed -Force
+		}
+
+	Save-StateConfig $state
+}
+
+function Clear-SteamCmdLastSignInFailed {
+	Set-SteamCmdLastSignInFailed -Failed:$false
+}
+
+function Get-SteamCmdCredentialStatus {
+	if (Test-SteamCmdLastSignInFailed)
+		{
+			return 'Last sign-in failed'
+		}
+
+	if (Get-SteamCmdSessionCredential)
+		{
+			return 'Session only'
+		}
+
+	if (Get-SavedSteamCmdCredential)
+		{
+			return 'Saved'
+		}
+
+	return 'Not configured'
+}
+
+function Get-ActiveSteamCmdCredential {
+	$sessionCredential = Get-SteamCmdSessionCredential
+	if ($sessionCredential)
+		{
+			return $sessionCredential
+		}
+
+	return (Get-SavedSteamCmdCredential)
+}
+
+function Request-SteamCmdDownloadCredential {
+	Write-Host "Download login required"
+	Write-Host "-----------------------"
+	Write-Host "Choose how to use your Steam login for this download."
+	Write-Host "1) Use login once"
+	Write-Host "2) Save login securely"
+	Write-Host "3) Cancel"
+	Write-Host ""
+
+	while ($true)
+		{
+			$select = Read-Host -Prompt 'Select an option'
+
+			switch ($select)
+				{
+					'1' { return (Prompt-SteamCmdCredential -Persist:$false) }
+					'2' { return (Prompt-SteamCmdCredential -Persist:$true) }
+					'3' {
+						Write-Host "Download was canceled."
+						Write-Host ""
+						return $null
+					}
+					default {
+						Write-Host "Select a number from the list (1-3)."
+						Write-Host ""
+					}
+				}
+		}
+}
+
+function Resolve-SteamCmdDownloadCredential {
+	$credential = Get-ActiveSteamCmdCredential
+	if ($credential)
+		{
+			return $credential
+		}
+
+	return (Request-SteamCmdDownloadCredential)
+}
+
+function Test-SteamCmdCredentialConfigured {
+	return ($null -ne (Get-SavedSteamCmdCredential))
 }
 
 function Get-ConfiguredWorkshopIds {
@@ -673,6 +1016,22 @@ function Set-GeneratedLaunchMods {
 	)
 
 	$state = Get-StateConfig
+	if (!$state.PSObject.Properties.Name -contains 'generatedLaunch' -or !$state.generatedLaunch)
+		{
+			$state | Add-Member -NotePropertyName generatedLaunch -NotePropertyValue ([pscustomobject]@{
+				mod = ''
+				serverMod = ''
+			}) -Force
+		}
+	elseif (!$state.generatedLaunch.PSObject.Properties.Name -contains 'mod')
+		{
+			$state.generatedLaunch | Add-Member -NotePropertyName mod -NotePropertyValue '' -Force
+		}
+	elseif (!$state.generatedLaunch.PSObject.Properties.Name -contains 'serverMod')
+		{
+			$state.generatedLaunch | Add-Member -NotePropertyName serverMod -NotePropertyValue '' -Force
+		}
+
 	$state.generatedLaunch.mod = ConvertTo-ModLaunchString $Mods
 	$state.generatedLaunch.serverMod = ConvertTo-ModLaunchString $ServerMods
 	Save-StateConfig $state
@@ -1011,10 +1370,10 @@ function Show-ConfiguredModsMenu {
 		{
 			Show-MenuHeader $Title
 			Show-ConfiguredMods $Kind
-			echo "1) Go back"
+			echo "1) Back"
 			echo "`n"
 
-			$selection = Read-Host -Prompt 'Please select desired action from menu above'
+			$selection = Read-Host -Prompt 'Select an option'
 
 			if ($selection -eq '1')
 				{
@@ -1022,7 +1381,7 @@ function Show-ConfiguredModsMenu {
 				}
 
 			echo "`n"
-			echo "Select number from provided list (1)"
+			echo "Select a number from the list (1)."
 			echo "`n"
 			Pause-BeforeMenu
 		}
@@ -1032,12 +1391,12 @@ function Add-ConfiguredModFromPrompt {
 	param([string] $Kind)
 
 	$config = Get-RootConfig
-	$rawInput = Read-Host -Prompt 'Paste Steam Workshop URL or mod ID'
+	$rawInput = Read-Host -Prompt 'Paste a Steam Workshop URL or mod ID'
 	$workshopId = Get-WorkshopIdFromInput $rawInput
 
 	if (!$workshopId)
 		{
-			echo "No valid Workshop ID found."
+			echo "No valid Workshop ID was found."
 			echo "`n"
 			return
 		}
@@ -1049,7 +1408,7 @@ function Add-ConfiguredModFromPrompt {
 			return
 		}
 
-	$name = Read-Host -Prompt 'Name/label for this mod'
+	$name = Read-Host -Prompt 'Enter a name for this mod'
 	$url = ''
 	if ($rawInput -match '^https?://')
 		{
@@ -1062,18 +1421,18 @@ function Add-ConfiguredModFromPrompt {
 	Save-RootConfig $config
 	Update-GeneratedLaunchFromRootConfig $config
 
-	echo "Workshop ID $workshopId was added."
+	echo "Added Workshop ID $workshopId."
 	echo "`n"
 }
 
 function Remove-ConfiguredModFromPrompt {
 	$config = Get-RootConfig
-	$rawInput = Read-Host -Prompt 'Paste Steam Workshop URL or mod ID to remove'
+	$rawInput = Read-Host -Prompt 'Paste a Steam Workshop URL or mod ID to remove'
 	$workshopId = Get-WorkshopIdFromInput $rawInput
 
 	if (!$workshopId)
 		{
-			echo "No valid Workshop ID found."
+			echo "No valid Workshop ID was found."
 			echo "`n"
 			return
 		}
@@ -1082,18 +1441,18 @@ function Remove-ConfiguredModFromPrompt {
 	Save-RootConfig $config
 	Update-GeneratedLaunchFromRootConfig $config
 
-	echo "Workshop ID $workshopId was removed from configured mod lists."
+	echo "Removed Workshop ID $workshopId from the configured mod lists."
 	echo "`n"
 }
 
 function Move-ConfiguredModFromPrompt {
 	$config = Get-RootConfig
-	$rawInput = Read-Host -Prompt 'Paste Steam Workshop URL or mod ID to move'
+	$rawInput = Read-Host -Prompt 'Paste a Steam Workshop URL or mod ID to move'
 	$workshopId = Get-WorkshopIdFromInput $rawInput
 
 	if (!$workshopId)
 		{
-			echo "No valid Workshop ID found."
+			echo "No valid Workshop ID was found."
 			echo "`n"
 			return
 		}
@@ -1102,7 +1461,7 @@ function Move-ConfiguredModFromPrompt {
 	echo "1) Client mods (-mod)"
 	echo "2) Server mods (-serverMod)"
 	echo "`n"
-	$target = Read-Host -Prompt 'Please select desired action from menu above'
+	$target = Read-Host -Prompt 'Select an option'
 
 	if ($target -eq '1')
 		{
@@ -1110,7 +1469,7 @@ function Move-ConfiguredModFromPrompt {
 		} elseif ($target -eq '2') {
 					Move-WorkshopModInConfig $config $workshopId 'serverMods'
 				} else {
-							echo "Select number from provided list (1-2)"
+							echo "Select a number from the list (1-2)."
 							echo "`n"
 							return
 						}
@@ -1118,7 +1477,7 @@ function Move-ConfiguredModFromPrompt {
 	Save-RootConfig $config
 	Update-GeneratedLaunchFromRootConfig $config
 
-	echo "Workshop ID $workshopId was moved."
+	echo "Moved Workshop ID $workshopId."
 	echo "`n"
 }
 
@@ -1129,12 +1488,12 @@ function ModManager_menu {
 	echo "2) List server mods"
 	echo "3) Add client mod"
 	echo "4) Add server mod"
-	echo "5) Move mod between client/server"
-	echo "6) Remove mod from config"
-	echo "7) Return to previous menu"
+	echo "5) Move mod between client and server lists"
+	echo "6) Remove mod from configuration"
+	echo "7) Back to Main Menu"
 	echo "`n"
 
-	$select = Read-Host -Prompt 'Please select desired action from menu above'
+	$select = Read-Host -Prompt 'Select an option'
 
 	switch ($select)
 		{
@@ -1178,10 +1537,74 @@ function ModManager_menu {
 			}
 			Default {
 				echo "`n"
-				echo "Select number from provided list (1-7)"
+				echo "Select a number from the list (1-7)."
 				echo "`n"
 				Pause-BeforeMenu
 				ModManager_menu
+			}
+		}
+}
+
+
+#Download login menu
+function DownloadLogin_menu {
+	Show-MenuHeader 'Download Login'
+
+	echo "Steam account required for DayZ server and mod downloads."
+	echo "Credentials are encrypted for the current Windows user."
+	echo "Use login once does not save your credentials."
+	echo "`n"
+
+	echo "1) Use login once"
+	echo "2) Save login securely"
+	echo "3) Clear saved login"
+	echo "4) Back to Main Menu"
+	echo "`n"
+
+	$select = Read-Host -Prompt 'Select an option'
+
+	switch ($select)
+		{
+			1 {
+				echo "`n"
+				[void](Prompt-SteamCmdCredential -Persist:$false)
+				Pause-BeforeMenu
+				Menu
+				Break
+			}
+
+			2 {
+				echo "`n"
+				[void](Prompt-SteamCmdCredential -Persist:$true)
+				Pause-BeforeMenu
+				Menu
+				Break
+			}
+
+			3 {
+				echo "`n"
+				if (Clear-SteamCmdCredential)
+					{
+						echo "Cleared the saved download login."
+					} else {
+						echo "No saved download login was found."
+					}
+				echo "`n"
+				Pause-BeforeMenu
+				Menu
+				Break
+			}
+
+			4 {
+				Menu
+				Break
+			}
+
+			Default {
+				echo "`n"
+				echo "Select a number from the list (1-4)."
+				echo "`n"
+				Break
 			}
 		}
 }
@@ -1192,23 +1615,24 @@ function Menu {
 	Show-MenuHeader (Get-ServerManagementTitle)
 	Show-MainMenuStatus
 
-	echo "1) Server update"
-	echo "2) Mod update"
+	echo "1) Update server"
+	echo "2) Update mods"
 	echo "3) Start server"
-	echo "4) Stop running server"
-	echo "5) Uninstall/Remove saved"
+	echo "4) Stop server"
+	echo "5) Remove / Uninstall"
 	echo "6) Manage mods"
-	echo "7) Exit"
+	echo "7) Configure download login"
+	echo "8) Exit"
 	echo "`n"
 
-	$select = Read-Host -Prompt 'Please select desired action from menu above'
+	$select = Read-Host -Prompt 'Select an option'
 	
     switch ($select)
         {
             #Call server update and related functions
             1 {
                 echo "`n"
-			    echo "Server update selected"
+			    echo "Update server selected."
 			    echo "`n"
 			
 			    [void](SteamCMDFolder)
@@ -1224,7 +1648,7 @@ function Menu {
             #Call mods update and related functions
             2 {
                 echo "`n"
-				echo "Mod update selected"
+				echo "Update mods selected."
 				echo "`n"
 						
 				[void](SteamCMDFolder)
@@ -1240,7 +1664,7 @@ function Menu {
             #Start DayZ server
             3 {
                 echo "`n"
-				echo "Start server selected"
+				echo "Start server selected."
 				echo "`n"
 								
 			    [void](SteamCMDFolder)
@@ -1264,7 +1688,7 @@ function Menu {
             #Stop running server
             4 {
                 echo "`n"
-				echo "Stop running server selected"
+				echo "Stop server selected."
 				echo "`n"
 				$script:lastServerActionSucceeded = $false
 				ServerStop
@@ -1284,7 +1708,7 @@ function Menu {
             #Purge saved login/path info
             5 {
                 echo "`n"
-				echo "Uninstall/Remove saved selected"
+				echo "Remove / Uninstall selected."
 				echo "`n"
 												
 				Remove_menu
@@ -1295,7 +1719,7 @@ function Menu {
             #Manage mods
             6 {
                 echo "`n"
-				echo "Manage mods selected"
+				echo "Manage mods selected."
 				echo "`n"
 												
 				ModManager_menu
@@ -1303,10 +1727,20 @@ function Menu {
                 Break
             }
 
-            #Close script
+            #Configure download login
             7 {
+				echo "`n"
+				echo "Configure download login selected."
+				echo "`n"
+				DownloadLogin_menu
+                
+                Break
+            }
+
+            #Close script
+            8 {
                 echo "`n"
-				echo "Exit selected"
+				echo "Exit selected."
 				echo "`n"
 														
 				exit 0
@@ -1318,7 +1752,7 @@ function Menu {
             Default {
                 
                 echo "`n"
-				echo "Select number from provided list (1-7)"
+				echo "Select a number from the list (1-8)."
 				echo "`n"
 									
 				Pause-BeforeMenu
@@ -1335,39 +1769,39 @@ function SteamCMDFolder {
 	#Check for saved SteamCMD folder in JSON state
 	if ([string]::IsNullOrWhiteSpace($state.steamCmdPath))
 		{
+			$recommendedFolder = Get-RecommendedSteamCmdPath
+
 			#Prompt user to insert path to SteamCMD folder
-			$script:folder = Read-Host -Prompt 'Insert path where is or where will be created SteamCMD folder (without quotation marks)'
+			Write-Host ""
+			$script:folder = Read-Host -Prompt "Enter the SteamCMD folder path, or press Enter to use $recommendedFolder"
+			Write-Host ""
+			$folder = $script:folder
 
 			#Check if path was really inserted
-			if ($folder -eq "")
+			if ([string]::IsNullOrWhiteSpace($folder))
 				{
+					$script:folder = $recommendedFolder
+					$folder = $script:folder
+					echo "Using the recommended SteamCMD folder: $folder"
 					echo "`n"
-					echo "No folder path inserted! Returning to Main menu..."
-					echo "`n"
-					
-					if ($script:startupBootstrapActive)
-						{
-							return $false
-						}
-
-					Menu
 				}
-			
+
+			echo "SteamCMD folder: $folder"
 			echo "`n"
-			echo "Selected SteamCMD folder is $folder"
-			echo "`n"
-			
+
 			#Create SteamCMD folder if it doesn't exist
 			if (!(Test-Path "$folder"))
 				{
-					echo "Selected SteamCMD folder created"
+					echo "Created the SteamCMD folder."
 					echo "`n"
-					
+
 					mkdir "$folder" >$null
 				}
 
 			#Prompt user to save path to SteamCMD folder for future use
-			$saveFolder = Read-Host -Prompt 'Do you want to save path for future use? (yes/no)'
+			Write-Host ""
+			$saveFolder = Read-Host -Prompt 'Save this path for future use? (yes/no)'
+			Write-Host ""
 
 			if ( ($saveFolder -eq "yes") -or ($saveFolder -eq "y")) 
 				{ 	
@@ -1376,20 +1810,21 @@ function SteamCMDFolder {
 					Save-StateConfig $state
 					
 					echo "`n"
-					echo "Path saved to $stateConfigPath"
+					echo "Saved the path to $stateConfigPath."
 					echo "`n"
 				}
 		} else {
 					#Use saved path to SteamCMD folder
 					$script:folder = $state.steamCmdPath
+					$folder = $script:folder
 					
-					echo "Selected SteamCMD folder is $folder"
+					echo "SteamCMD folder: $folder"
 					echo "`n"
 					
 					#Create SteamCMD folder if it doesn't exist
 					if (!(Test-Path "$folder"))
 						{
-							echo "Selected SteamCMD folder created"
+							echo "Created the SteamCMD folder."
 							echo "`n"
 							
 							mkdir "$folder" >$null
@@ -1403,12 +1838,12 @@ function SteamCMDFolder {
 #SteamCMD exe
 function SteamCMDExe {
 	#Check if SteamCMD.exe exist
-			if (!(Test-Path "$folder\steamcmd.exe")) 
+			if (!(Test-Path "$folder\steamcmd.exe"))
 		{
-			echo "`n"
+			Write-Host ""
 			#Prompt user to download and install SteamCMD
-			$steamInst = Read-Host -Prompt "'$folder\steamcmd.exe' not found! Do you want to download and install it to previously chosen folder? (yes/no)"
-			echo "`n"
+			$steamInst = Read-Host -Prompt "'$folder\steamcmd.exe' was not found. Download and install SteamCMD to this folder? (yes/no)"
+			Write-Host ""
 			
 			if ( ($steamInst -eq "yes") -or ($steamInst -eq "y")) 
 				{ 
@@ -1421,7 +1856,7 @@ function SteamCMDExe {
                     if ($psVer -gt 3) 
 	                    { 
 
-				            echo "Using Powershell version $psVer"
+				            echo "Using PowerShell version $psVer"
 							echo "`n"
 
                             #Download SteamCMD
@@ -1444,7 +1879,7 @@ function SteamCMDExe {
 							$steamCmdExe = Join-Path $folder 'steamcmd.exe'
 							if (!(Test-ExpectedSigner $steamCmdExe 'Valve Corp\.'))
 								{
-									echo "Downloaded steamcmd.exe does not have a valid Valve signature. Aborting."
+									echo "The downloaded steamcmd.exe file does not have a valid Valve signature. Aborting."
 									Remove-Item -LiteralPath $destPath -Force -ErrorAction SilentlyContinue
 									if ($script:startupBootstrapActive)
 										{
@@ -1457,7 +1892,7 @@ function SteamCMDExe {
 						#If Powershell version is under 4
 			            } else { 
 						            echo "`n"
-									echo "Wrong Powershell version $psVer !"
+									echo "PowerShell version $psVer is not supported."
 									echo "`n"
 					           }
 					
@@ -1477,7 +1912,7 @@ function SteamCMDExe {
 							
 						} else {
 									#Throw error if SteamCMD doesn't exist after installation
-									echo "$folder\steamcmd.exe not found!"
+									echo "$folder\steamcmd.exe was not found."
 									echo "`n"
 									
 									if ($script:startupBootstrapActive)
@@ -1490,7 +1925,7 @@ function SteamCMDExe {
 								}
 				} else {
 							#Throw error if SteamCMD doesn't exist and user chose not to install
-							echo "$folder\steamcmd.exe not found!"
+							echo "$folder\steamcmd.exe was not found."
 							echo "`n"
 							
 							if ($script:startupBootstrapActive)
@@ -1506,13 +1941,21 @@ function SteamCMDExe {
 	return $true
 }
 
-#Legacy Steam login compatibility stub
-function SteamLoginPromptOnly {
-	throw [System.NotSupportedException] 'Steam account login automation is no longer supported. SteamCMD automation is anonymous-only.'
-}
-
 function Get-SteamCmdLoginArguments {
-	return @('+login', 'anonymous')
+	param(
+		[System.Management.Automation.PSCredential] $Credential
+	)
+
+	if (!$Credential)
+		{
+			$credential = Get-ActiveSteamCmdCredential
+		}
+	if (!$credential)
+		{
+			throw [System.InvalidOperationException] 'Steam account credentials are required to download and update DayZ server files and mods.'
+		}
+
+	return @('+login', $credential.UserName, $credential.GetNetworkCredential().Password)
 }
 
 function Get-SteamCmdUninstallArguments {
@@ -1552,6 +1995,239 @@ function Resolve-DayZServerUninstallState {
 	return $result
 }
 
+function ConvertTo-SteamCmdArgumentString {
+	param([string[]] $Arguments)
+
+	if (-not $Arguments)
+		{
+			return ''
+		}
+
+	$parts = @()
+	foreach ($arg in $Arguments)
+		{
+			$value = [string] $arg
+			if ($value -eq '')
+				{
+					$parts += '""'
+					continue
+				}
+			if ($value -notmatch '[\s"]')
+				{
+					$parts += $value
+					continue
+				}
+			$escaped = $value -replace '"', '\"'
+			$parts += '"' + $escaped + '"'
+		}
+
+	return ($parts -join ' ')
+}
+
+function Invoke-SteamCmdCommand {
+	param([string[]] $Arguments)
+
+	# Launch steamcmd via System.Diagnostics.Process so it inherits the
+	# parent's console handles directly. UseShellExecute=$false with no
+	# Redirect* flags hands the child the real stdin/stdout/stderr at the
+	# OS level, so PowerShell's success stream never sees the output. This
+	# is required because callers do `$proc = Invoke-SteamCmdCommand(...)` —
+	# any stdout we routed through PowerShell would be swallowed by that
+	# outer capture and the Steam Guard prompt would never reach the user.
+	#
+	# We use the legacy Arguments string (with manual escaping) instead of
+	# ArgumentList because ArgumentList is .NET Core 2.1+ only and is not
+	# available under Windows PowerShell 5.1 / .NET Framework.
+	$psi = [System.Diagnostics.ProcessStartInfo]::new()
+	$psi.FileName = "$folder\steamcmd.exe"
+	$psi.UseShellExecute = $false
+	$psi.CreateNoWindow = $false
+	$psi.Arguments = ConvertTo-SteamCmdArgumentString $Arguments
+
+	$proc = [System.Diagnostics.Process]::Start($psi)
+	$proc.WaitForExit()
+	$exitCode = $proc.ExitCode
+	$proc.Dispose()
+
+	return [pscustomobject]@{
+		ExitCode = $exitCode
+		Output   = ''
+		StdOut   = ''
+		StdErr   = ''
+	}
+}
+
+function Write-SteamCmdFailureGuidance {
+	param(
+		[int] $ExitCode,
+		[string] $Output,
+		[string] $Operation
+	)
+
+	if (Test-SteamCmdSignInFailure -ExitCode $ExitCode -Output $Output)
+		{
+			Write-Host "SteamCMD sign-in failed for the saved Steam account."
+			Write-Host "If Steam Guard is enabled, approve the sign-in in the Steam app and retry."
+			Write-Host "If Steam Guard uses email, SteamCMD will ask for the code in this same window after you enter your password."
+			Write-Host "Re-enter your Steam credentials if your password has changed."
+			Write-Host ""
+			return
+		}
+
+	if ($Output -match 'No subscription')
+		{
+			Write-Host "Steam denied access to DayZ Server for the saved account."
+			Write-Host "Check that this Steam account owns DayZ and complete any Steam Guard app approval or email code check, then retry."
+			Write-Host ""
+		}
+}
+
+function Test-SteamCmdSignInFailure {
+	param(
+		[int] $ExitCode,
+		[string] $Output
+	)
+
+	return (($ExitCode -eq 5) -or ($Output -match 'Invalid Password|Login Failure|Steam Guard|two-factor|Two-factor'))
+}
+
+function Request-SteamCmdRetryCredential {
+	Write-Host "Steam sign-in failed"
+	Write-Host "-------------------"
+	Write-Host "Choose how to retry the Steam login."
+	Write-Host "If Steam Guard uses email, SteamCMD will ask for the code in this same window after you enter your password."
+	Write-Host "1) Re-enter login once"
+	Write-Host "2) Clear saved login and re-enter"
+	Write-Host "3) Cancel"
+	Write-Host ""
+
+	while ($true)
+		{
+			$select = Read-Host -Prompt 'Select a retry option'
+
+			switch ($select)
+				{
+					'1' {
+						$credential = Prompt-SteamCmdCredential -Persist:$false
+						if ($credential)
+							{
+								return [pscustomobject]@{
+									Credential = $credential
+									SaveOnSuccess = $false
+								}
+							}
+
+						return $null
+					}
+					'2' {
+						$credential = Prompt-SteamCmdCredential -Persist:$false -PendingSave
+						if ($credential)
+							{
+								return [pscustomobject]@{
+									Credential = $credential
+									SaveOnSuccess = $true
+								}
+							}
+
+						return $null
+					}
+					'3' {
+						Write-Host "Retry was canceled."
+						Write-Host ""
+						return $null
+					}
+					default {
+						Write-Host "Select a number from the list (1-3)."
+						Write-Host ""
+					}
+				}
+		}
+}
+
+function Invoke-SteamCmdAuthenticatedOperation {
+	param(
+		[string] $Operation,
+		[string[]] $Arguments
+	)
+
+	$credential = Resolve-SteamCmdDownloadCredential
+	if (!$credential)
+		{
+			echo "Steam download login was not configured."
+			echo "Open Configure download login and try again."
+			echo "`n"
+			return $null
+		}
+
+	$loginArgs = Get-SteamCmdLoginArguments -Credential $credential
+	$proc = Invoke-SteamCmdCommand ($loginArgs + $Arguments)
+	if ($proc.ExitCode -eq 0)
+		{
+			Clear-SteamCmdLastSignInFailed
+			return $proc
+		}
+
+	if (Test-SteamCmdSignInFailure -ExitCode $proc.ExitCode -Output $proc.Output)
+		{
+			Set-SteamCmdLastSignInFailed
+			Write-SteamCmdFailureGuidance $proc.ExitCode $proc.Output $Operation
+
+			$previousSessionCredential = Get-SteamCmdSessionCredential
+			$retrySelection = Get-SteamCmdRetryCredential
+			if ($retrySelection -is [System.Management.Automation.PSCredential])
+				{
+					$retryCredential = $retrySelection
+					$saveRetryCredentialOnSuccess = $false
+				} else {
+					$retryCredential = $retrySelection.Credential
+					$saveRetryCredentialOnSuccess = [bool] $retrySelection.SaveOnSuccess
+				}
+			if (!$retryCredential)
+				{
+					echo "SteamCMD $Operation failed with exit code $($proc.ExitCode)."
+					return $proc
+				}
+
+			$retryLoginArgs = Get-SteamCmdLoginArguments -Credential $retryCredential
+			$retryProc = Invoke-SteamCmdCommand ($retryLoginArgs + $Arguments)
+			if ($retryProc.ExitCode -eq 0)
+				{
+					if ($saveRetryCredentialOnSuccess)
+						{
+							Save-SteamCmdCredential $retryCredential
+							# The retry prompt set the session credential
+							# as a side effect of -Persist:$false. Clear
+							# it now so the status helper reports 'Saved'
+							# (not 'Session only') after the successful
+							# replacement.
+							Clear-SteamCmdSessionCredential
+						}
+					Clear-SteamCmdLastSignInFailed
+					return $retryProc
+				}
+
+			if ($previousSessionCredential)
+				{
+					Set-SteamCmdSessionCredential $previousSessionCredential
+				} else {
+					Clear-SteamCmdSessionCredential
+				}
+
+			if (Test-SteamCmdSignInFailure -ExitCode $retryProc.ExitCode -Output $retryProc.Output)
+				{
+					Set-SteamCmdLastSignInFailed
+					Write-SteamCmdFailureGuidance $retryProc.ExitCode $retryProc.Output $Operation
+				} else {
+					Clear-SteamCmdLastSignInFailed
+				}
+
+			echo "SteamCMD $Operation failed with exit code $($retryProc.ExitCode)."
+			return $retryProc
+		}
+
+	return $proc
+}
+
 #Steam login
 function SteamLogin {
 	#Server update selected
@@ -1570,12 +2246,11 @@ function SteamLogin {
 #Update DayZ server data
 function ServerUpdate {
 	
-	echo "Downloading DayZ server now..."
+	echo "Updating the DayZ server..."
 	echo "`n"
 
 	#Login to SteamCMD and update DayZ server app
-	$loginArgs = Get-SteamCmdLoginArguments
-	$proc = Start-Process -FilePath "$folder\steamcmd.exe" -ArgumentList ($loginArgs + @('+app_update', $steamApp, 'validate', '+quit')) -Wait -NoNewWindow -PassThru
+	$proc = Invoke-SteamCmdAuthenticatedOperation -Operation 'server update' -Arguments @('+app_update', $steamApp, 'validate', '+quit')
 	if ($proc.ExitCode -ne 0)
 		{
 			echo "SteamCMD server update failed with exit code $($proc.ExitCode)."
@@ -1588,7 +2263,7 @@ function ServerUpdate {
 	$script:steamPw = $null
 
 	echo "`n"
-	echo "DayZ server was updated to latest version"
+	echo "DayZ server was updated to the latest version."
 	echo "`n"
 	
 }
@@ -1602,7 +2277,7 @@ function ModsUpdate {
 	#Check if DayZ server folder exists
 	if (!(Test-Path "$serverFolder"))
 		{
-			echo "DayZServer folder does not exist! Run server update before mod update."
+			echo "The DayZ server folder was not found. Run Update server before Update mods."
 			echo "`n"
 			
 	} else {
@@ -1618,15 +2293,15 @@ function ModsUpdate {
 
 					if ((!$mods) -and (!$serverMods))
 						{
-							echo "Both JSON mod lists are empty! Add at least one mod from Manage mods."
+							echo "Both mod lists are empty. Add at least one mod in Manage Mods."
 							echo "`n"
 							Menu
 						}
 					
 					#List wrong format ids
-					echo "Following mod ids have wrong format!"
+					echo "The following mod IDs are invalid:"
 					echo "`n"
-					echo "Mods:"
+					echo "Client mods:"
 					echo $wrongId
 					echo "`n"
 					echo "Server mods:"
@@ -1634,9 +2309,9 @@ function ModsUpdate {
 					echo "`n"
 
 					#List correct format ids
-					echo "Following mod ids will be used for update:"
+					echo "The following mod IDs will be updated:"
 					echo "`n"
-					echo "Mods:"
+					echo "Client mods:"
 					echo $mods
 					echo "`n"
 					echo "Server mods:"
@@ -1657,12 +2332,11 @@ function ModsUpdate {
 						{
 							New-WorkshopDownloadScript $mods "$tempModList"
 
-							echo "Starting download of $($mods.Count) mods..."
+							echo "Starting download for $($mods.Count) mods..."
 							echo "`n"
 
 							#Login to SteamCMD and download/update selected mods
-							$loginArgs = Get-SteamCmdLoginArguments
-							$proc = Start-Process -FilePath "$folder\steamcmd.exe" -ArgumentList ($loginArgs + @('+runscript', "$tempModList")) -Wait -NoNewWindow -PassThru
+							$proc = Invoke-SteamCmdAuthenticatedOperation -Operation 'mod update' -Arguments @('+runscript', "$tempModList")
 							if ($proc.ExitCode -ne 0)
 								{
 									echo "SteamCMD workshop update failed with exit code $($proc.ExitCode)."
@@ -1687,7 +2361,7 @@ function ModsUpdate {
 							
 							#Copy mods from workshop folder to DayZ server folder
                             echo "`n"
-							echo "Copying mods to DayZ server folder..."
+							echo "Copying mods to the DayZ server folder..."
 							echo "`n"
 							
 							foreach ($mod in $mods)
@@ -1710,7 +2384,7 @@ function ModsUpdate {
 										}
 								}
 							
-							echo "Selected mods were copied to DayZ server folder"
+							echo "Copied the selected mods to the DayZ server folder."
 							echo "`n"
 							
 						} 
@@ -1726,12 +2400,11 @@ function ModsUpdate {
 						{
 							New-WorkshopDownloadScript $serverMods "$tempModListServer"
 
-							echo "Starting download of $($serverMods.Count) server mods..."
+							echo "Starting download for $($serverMods.Count) server mods..."
 							echo "`n"
 
 							#Login to SteamCMD and download/update selected server mods
-							$loginArgs = Get-SteamCmdLoginArguments
-							$proc = Start-Process -FilePath "$folder\steamcmd.exe" -ArgumentList ($loginArgs + @('+runscript', "$tempModListServer")) -Wait -NoNewWindow -PassThru
+							$proc = Invoke-SteamCmdAuthenticatedOperation -Operation 'server mod update' -Arguments @('+runscript', "$tempModListServer")
 							if ($proc.ExitCode -ne 0)
 								{
 									echo "SteamCMD workshop update failed with exit code $($proc.ExitCode)."
@@ -1756,7 +2429,7 @@ function ModsUpdate {
 							
 							#Copy server mods from workshop folder to DayZ server folder
                             echo "`n"
-							echo "Copying server mods to DayZ server folder..."
+							echo "Copying server mods to the DayZ server folder..."
 							echo "`n"
 							
 							foreach ($serverMod in $serverMods)
@@ -1779,7 +2452,7 @@ function ModsUpdate {
 										}
 								}
 							
-							echo "Selected server mods were copied to DayZ server folder"
+							echo "Copied the selected server mods to the DayZ server folder."
 							echo "`n"
 							
 						}
@@ -1806,7 +2479,7 @@ function Server_menu {
 	#Check if DayZ server exe exists
 	if (!(Test-Path "$serverFolder"))
 		{
-			echo "DayZServer folder does not exist in $serverFolder ! Run server update to download/repair server data."
+			echo "The DayZ server folder was not found in $serverFolder. Run Update server to download or repair the server data."
 			echo "`n"
 			$script:lastServerActionSucceeded = $false
 			return
@@ -1818,12 +2491,12 @@ function Server_menu {
                             $null {
 										Show-MenuHeader 'Start Server'
 
-							            echo "1) Use user launch parameters"
+							            echo "1) Use saved launch parameters"
 							            echo "2) Use default launch parameters"
-							            echo "3) Return to previous menu"
+							            echo "3) Back"
 							            echo "`n"
 
-							            $select = Read-Host -Prompt 'Please select desired action from menu above'
+							            $select = Read-Host -Prompt 'Select an option'
 
                                         Server_menu
 
@@ -1833,7 +2506,7 @@ function Server_menu {
                             #Use user provided server parameters
                             1 {
                                     echo "`n"
-							        echo "User launch parameters selected"
+							        echo "Saved launch parameters selected."
 							        echo "`n"
 							
 							        $serverPar = Get-ConfiguredLaunchParameters (Get-RootConfig)
@@ -1841,7 +2514,7 @@ function Server_menu {
 								        #Check if user server launch parameters were properly loaded
 								        if (!$serverPar)
 								        {
-									        echo "Server launch parameter file is empty or wasn't loaded properly!"
+									        echo "Saved launch parameters are empty or could not be loaded."
 									        echo "`n"
 									
 									        #Return to Main menu if it wasn't started from CMD			
@@ -1856,7 +2529,7 @@ function Server_menu {
 									        exit 0
 								        }
 								
-								        echo "Launching DayZ server with user launch parameters..."
+								        echo "Starting the DayZ server with saved launch parameters..."
 								        echo "`n"
 									
 								        #Run server
@@ -1868,7 +2541,7 @@ function Server_menu {
 										
 								        sleep -Seconds 5	
 										
-								        echo "DayZ server is up and running..."
+								        echo "The DayZ server is now running."
 								        echo "`n"
 
                                         $script:lastServerActionSucceeded = $true
@@ -1878,10 +2551,10 @@ function Server_menu {
                             #Use default server parameters
                             2 {
                                     echo "`n"
-									echo "Default launch parameters selected"
+									echo "Default launch parameters selected."
 									echo "`n"
 										
-									echo "Launching DayZ server with default launch parameters..."
+									echo "Starting the DayZ server with default launch parameters..."
 									echo "`n"
 
 									#Run server
@@ -1893,7 +2566,7 @@ function Server_menu {
 										
 									sleep -Seconds 5	
 										
-									echo "DayZ server is up and running..."
+									echo "The DayZ server is now running."
 									echo "`n"
 
                                     $script:lastServerActionSucceeded = $true
@@ -1909,7 +2582,7 @@ function Server_menu {
                             #Force user to select one of provided options
                             Default {
                                         echo "`n"
-										echo "Select number from provided list (1-3)"
+										echo "Select a number from the list (1-3)."
 										echo "`n"
 															
 										$select = $null
@@ -1932,7 +2605,7 @@ function ServerStop {
 	#Check if process list is not empty
 	if (!$trackedServers -or ($trackedServers.Count -eq 0))
 		{
-			echo "There is no tracked DayZ server instance running or it wasn't started by this script."
+			echo "No tracked DayZ server is running, or it was not started by this script."
 			echo "`n"
 			$script:lastServerActionSucceeded = $false
 			return
@@ -1946,12 +2619,12 @@ function ServerStop {
 							#Check for running DayZ server instance
 							if (!$killServer)
 								{
-									echo "DayZ server instance with PID $displayPid is not running or did not match the saved DayZ server metadata."
+									echo "The DayZ server with PID $displayPid is not running or no longer matches the saved process metadata."
 									echo "`n"
 								
 								#Kill server
 								} else { 
-											echo "DayZ server with PID $displayPid found, commencing shutdown..."
+											echo "Found tracked DayZ server with PID $displayPid. Shutting it down..."
 											echo "`n"
 									
 											#Gracefull exit
@@ -1969,16 +2642,16 @@ function ServerStop {
 														{
 															$killServer | Stop-Process -Force
 													
-															echo "DayZ server with PID $displayPid was forcefully turned off"
+															echo "The DayZ server with PID $displayPid was force-stopped."
 															echo "`n"
 														} else {
-																	echo "PID $displayPid no longer matched a tracked DayZ server. Refusing force stop."
+																	echo "PID $displayPid no longer matched a tracked DayZ server. Force stop was cancelled."
 																	echo "`n"
 																}
 													
 												}
 												
-											echo "DayZ server with PID $displayPid was turned off"
+											echo "The DayZ server with PID $displayPid was stopped."
 											echo "`n"
 											$stoppedCount++
 											
@@ -1994,7 +2667,7 @@ function ServerStop {
 #Uninstall DayZ server
 function ServerUninstall {
 	
-	echo "Uninstalling DayZ server now..."
+	echo "Uninstalling the DayZ server..."
 	echo "`n"
 
     $serverFolder = $folder + $appFolder
@@ -2016,7 +2689,7 @@ function ServerUninstall {
     if ($uninstallState.ServerFolderExists -or $uninstallState.ManifestExists)
         {   																																				
 	        echo "`n"
-	        echo "DayZ server uninstallation was unsuccessful"
+	        echo "The DayZ server uninstall did not complete successfully."
 	        if ($uninstallState.ManifestExists)
 	        	{
 	        		echo "SteamCMD app manifest still exists at $appManifestPath"
@@ -2031,7 +2704,7 @@ function ServerUninstall {
 	                		echo "SteamCMD left a stale app manifest behind. It was removed automatically."
 	                		echo "`n"
 	                	}
-	                echo "DayZ server was succesfully uninstalled"
+	                echo "The DayZ server was successfully uninstalled."
 	                echo "`n"
 
                 }
@@ -2041,30 +2714,30 @@ function ServerUninstall {
 function Remove_menu {
 	Show-MenuHeader 'Remove / Uninstall'
 
-	echo "1) Remove path to SteamCMD folder"
-	echo "2) Remove path to mod list file"
-	echo "3) Remove mod"
-	echo "4) Remove path to user launch parameters file"
+	echo "1) Clear saved SteamCMD path"
+	echo "2) Legacy mod list path info"
+	echo "3) Remove mod files"
+	echo "4) Legacy launch parameters path info"
 	echo "5) Uninstall DayZ server"
 	echo "6) Uninstall SteamCMD"
-	echo "7) Return to previous menu"
+	echo "7) Back to Main Menu"
 	echo "`n"
 
-	$select = Read-Host -Prompt 'Please select desired action from menu above'
+	$select = Read-Host -Prompt 'Select an option'
 	
     switch ($select)
         {
             #Remove stored path to SteamCMD folder
             1 {
                     echo "`n"
-					echo "Remove path to SteamCMD folder selected"
+					echo "Clear saved SteamCMD path selected."
 					echo "`n"
 						
 					$state = Get-StateConfig
 					$state.steamCmdPath = $null
 					Save-StateConfig $state
 						
-					echo "Stored path to SteamCMD folder was removed"
+					echo "Cleared the saved SteamCMD path."
 					echo "`n"
 						
 					Pause-BeforeMenu
@@ -2076,9 +2749,9 @@ function Remove_menu {
             #Remove stored path to mod list file
             2 {
 					echo "`n"
-					echo "Remove path to mod list file selected"
+					echo "Legacy mod list path info selected."
 					echo "`n"
-					echo "Mod lists are now stored in $rootConfigPath. Use Manage mods to add, move, or remove entries."
+					echo "Mod lists are now stored in $rootConfigPath. Use Manage Mods to add, move, or remove entries."
 					echo "`n"
 					Pause-BeforeMenu
 					Remove_menu
@@ -2090,16 +2763,16 @@ function Remove_menu {
                     $reminder = $false
                     
                     echo "`n"
-					echo "Remove mod selected"
+					echo "Remove mod files selected."
 					echo "`n"
 
 					#Prompt user to insert workshop id or workshop url for the mod to remove
-					$rawRemMod = Read-Host -Prompt 'Insert mod id you wish to remove'
+					$rawRemMod = Read-Host -Prompt 'Enter the mod ID you want to remove'
 					$rem_mod = Get-WorkshopIdFromInput $rawRemMod
 					if ([string]::IsNullOrWhiteSpace($rem_mod))
 						{
 							echo "`n"
-							echo "No valid mod id inserted! Returning to Remove menu..."
+							echo "No valid mod ID was entered. Returning to Remove / Uninstall."
 							echo "`n"
 												
 							Remove_menu
@@ -2119,14 +2792,14 @@ function Remove_menu {
 					#Check if selected mod folder exist in workshop folder
 					if (!(Test-Path "$workshopFolder\$rem_mod"))
 						{
-							echo "Selected mod folder doesn't exist in $workshopFolder !"
+							echo "The mod folder was not found in $workshopFolder."
 							echo "`n"
 												
 						} else { 
 									#Remove selected mod folder from workshop folder
 									Remove-Item -LiteralPath "$workshopFolder\$rem_mod" -Force -Recurse
 														
-									echo "Selected mod folder was removed from $workshopFolder"
+									echo "Removed the mod folder from $workshopFolder."
 									echo "`n"
 
                                     $reminder = $true
@@ -2135,14 +2808,14 @@ function Remove_menu {
 					#Check if selected mod folder exist in DayZ server folder
 					if (!(Test-Path "$serverFolder\$rem_mod"))
 						{
-							echo "Selected mod folder doesn't exist in $serverFolder !"
+							echo "The mod folder was not found in $serverFolder."
 							echo "`n"
 												
 						} else { 
 									#Remove selected mod folder from DayZ server folder
 									Remove-Item -LiteralPath "$serverFolder\$rem_mod" -Force -Recurse
 														
-									echo "Selected mod folder was removed from $serverFolder"
+									echo "Removed the mod folder from $serverFolder."
 									echo "`n"
 
                                     $reminder =  $true
@@ -2156,7 +2829,7 @@ function Remove_menu {
 					
 					if ($reminder)		
 						{ 
-							echo "Don't forget to remove $rem_mod also from your list of mods/server mods in case you don't want to use it anymore!"
+							echo "If you no longer want to use $rem_mod, also remove it from your configured client and server mod lists."
 							echo "`n"
 						}
 										
@@ -2168,13 +2841,13 @@ function Remove_menu {
             #Remove stored path to user launch parameters file
             4 {
 					echo "`n"
-					echo "Remove path to user launch parameters file selected"
+					echo "Legacy launch parameters path info selected."
 					echo "`n"
 
-					echo "Launch parameters are now stored in $rootConfigPath as launchParameters."
+					echo "Launch parameters are now stored in $rootConfigPath under launchParameters."
 					echo "`n"
 												
-					echo "No JSON state path was removed."
+					echo "No separate JSON state path is stored anymore."
 					echo "`n"
 												
 					Remove_menu
@@ -2185,11 +2858,11 @@ function Remove_menu {
             #Uninstall DayZ server
             5 {
                     echo "`n"
-					echo "Uninstall DayZ server selected"
+					echo "Uninstall DayZ server selected."
 					echo "`n"
 														
 					#Prompt user for DayZ server uninstall confirmation
-					$rem_server = Read-Host -Prompt 'Are you sure you want to uninstall DayZ server? (yes/no)'
+					$rem_server = Read-Host -Prompt 'Uninstall the DayZ server? (yes/no)'
 														
 					echo "`n"	
 														
@@ -2209,11 +2882,11 @@ function Remove_menu {
             #Uninstall SteamCMD
             6 {
                     echo "`n"
-					echo "Uninstall SteamCMD selected"
+					echo "Uninstall SteamCMD selected."
 					echo "`n"
 																
 					#Prompt user for SteamCMD uninstall confirmation
-					$rem_server = Read-Host -Prompt 'Are you sure you want to uninstall SteamCMD? This option will also uninstall DayZ server and remove all its data! (yes/no)'
+					$rem_server = Read-Host -Prompt 'Uninstall SteamCMD? This also uninstalls the DayZ server and removes all of its data. (yes/no)'
 																
 					echo "`n"	
 														
@@ -2223,21 +2896,21 @@ function Remove_menu {
 							SteamCMDExe
 							ServerUninstall
 																		
-							echo "Uninstalling SteamCMD now..."
+							echo "Uninstalling SteamCMD..."
 							echo "`n"
 
 							if (!(Test-SafeSteamCmdFolderForRemoval $folder))
 								{
-									echo "Refusing to remove SteamCMD folder because the saved path is not a safe SteamCMD install folder: $folder"
+									echo "The saved path is not a safe SteamCMD install folder, so the SteamCMD folder will not be removed: $folder"
 									echo "`n"
 									Remove_menu
 									return
 								}
 
-							$confirmFolder = Read-Host -Prompt "Type the full SteamCMD folder path to confirm deletion"
+							$confirmFolder = Read-Host -Prompt "Type the full SteamCMD folder path to confirm removal"
 							if ($confirmFolder -ne $folder)
 								{
-									echo "Confirmation did not match. SteamCMD folder was not removed."
+									echo "The confirmation path did not match. The SteamCMD folder was not removed."
 									echo "`n"
 									Remove_menu
 									return
@@ -2245,24 +2918,24 @@ function Remove_menu {
 																		
 							Remove-Item -LiteralPath "$folder" -Force -Recurse
 																		
-							echo "SteamCMD was succesfully uninstalled"
+							echo "SteamCMD was successfully uninstalled."
 							echo "`n"
 																		
 						}
 																
 					#Prompt user for Documents folder removal confirmation
-					$rem_mod = Read-Host -Prompt 'Do you want to remove the Documents folder state, including saved SteamCMD paths, generated launch mod strings, and tracked server process info? (yes/no)'
+					$rem_mod = Read-Host -Prompt 'Remove the Documents state folder, including saved SteamCMD paths, generated launch mod strings, and tracked server process info? (yes/no)'
 																
 					echo "`n"	
 														
 					if ( ($rem_mod -eq "yes") -or ($rem_mod -eq "y")) 
 						{ 	
-							echo "Removing Documents folder now..."
+							echo "Removing the Documents state folder..."
 							echo "`n"
 																		
 							Remove-Item -LiteralPath "$docFolder" -Force -Recurse
 																		
-							echo "Folder was succesfully removed"
+							echo "The folder was successfully removed."
 							echo "`n"
 																		
 						}
@@ -2282,7 +2955,7 @@ function Remove_menu {
             #Force user to select one of provided options
             Default {
                         echo "`n"
-						echo "Select number from provided list (1-7)"
+						echo "Select a number from the list (1-7)."
 						echo "`n"
 																				
 						Remove_menu
@@ -2301,13 +2974,13 @@ function CMD {
 	$paramCheckServer = $false
 	
 	echo "`n"
-	echo "Launch parameters are being used."
+	echo "Command-line parameters detected."
 
     #Set Steam app id and server folder name
 	if ($app -eq "exp") 
 		{ 
             echo "`n"
-			echo "Experimental server management selected"
+			echo "Experimental server selected."
 			echo "`n"
 
 			Set-SelectedServerApp 'exp'
@@ -2315,7 +2988,7 @@ function CMD {
         } else {
 
                     echo "`n"
-			        echo "Stable server management selected"
+			        echo "Stable server selected."
 			        echo "`n"
 
 					Set-SelectedServerApp 'stable'
@@ -2326,7 +2999,7 @@ function CMD {
 	if (($u -eq "server") -or ($update -eq "server")) 
 		{ 
 			echo "`n"
-			echo "Server update selected"
+			echo "Update server selected."
 			echo "`n"
 			
 			$select = 1
@@ -2342,7 +3015,7 @@ function CMD {
 			} elseif (($u -eq "mod") -or ($u -eq "mods") -or ($update -eq "mod") -or ($update -eq "mods"))
 					{ 
 						echo "`n"
-						echo "Mods update selected"
+						echo "Update mods selected."
 						echo "`n"
 						
 						$select = 2
@@ -2358,7 +3031,7 @@ function CMD {
 						} elseif (($u -eq "all") -or ($update -eq "all"))
 								{ 
 									echo "`n"
-									echo "Server + mod update selected"
+									echo "Update server and mods selected."
 									echo "`n"
 									
 									#Server update
@@ -2389,7 +3062,7 @@ function CMD {
 			#User launch parameters
 			if (($lp -eq "user") -or ($launchParam -eq "user")) 
 				{ 
-					echo "Start server with user launch parameters selected"
+					echo "Start server with saved launch parameters selected."
 					
 					$select = 1
 					
@@ -2397,7 +3070,7 @@ function CMD {
 					
 					#Default launch parameters
 					} else {
-								echo "Start server with default launch parameters selected"
+								echo "Start server with default launch parameters selected."
 								
 								$select = 2
 					
@@ -2408,7 +3081,7 @@ function CMD {
 			} elseif (($s -eq "stop") -or ($server -eq "stop"))
 					{ 	
 						echo "`n"
-						echo "Stop running server selected"
+						echo "Stop server selected."
 						echo "`n"
 										
 						ServerStop
@@ -2423,21 +3096,21 @@ function CMD {
 			if ((($paramCheckUpdate -eq $false) -and !($u -eq "")) -or (($paramCheckUpdate -eq $false) -and !($update -eq ""))) 
 				{ 
 					echo "`n"
-					echo "Wrong -u/-update parameter value used! Check README.md or 'Get-Help .\Server_manager.ps1 -Parameter update' for correct lauch parameter values."
+					echo "Invalid -u/-update value. See README.md or 'Get-Help .\Server_manager.ps1 -Parameter update' for valid launch parameter values."
 					echo "`n"
 				}
 				
 			if ((($paramCheckServer -eq $false) -and !($s -eq "")) -or (($paramCheckServer -eq $false) -and !($server -eq ""))) 
 				{ 
 					echo "`n"
-					echo "Wrong -s/-server parameter value used! Check README.md or 'Get-Help .\Server_manager.ps1 -Parameter server' for correct lauch parameter values."
+					echo "Invalid -s/-server value. See README.md or 'Get-Help .\Server_manager.ps1 -Parameter server' for valid launch parameter values."
 					echo "`n"
 				}
 			
 			exit 0
 		}
 			
-	echo "All selected tasks are done."
+	echo "All requested tasks are complete."
 	echo "`n"
 	
 	exit 0
@@ -2448,19 +3121,19 @@ function MainMenu {
 
 		Show-MenuHeader (Get-MainMenuTitle)
 
-	    echo "1) Stable server management"
-	    echo "2) Experimental server management"
+	    echo "1) Stable server"
+	    echo "2) Experimental server"
         echo "3) Exit"
 	    echo "`n"
 
-	    $select = Read-Host -Prompt 'Please select desired action from menu above'
+	    $select = Read-Host -Prompt 'Select an option'
 	
         switch ($select)
             {
                 #Steam Stable server app
                 1 {
                     echo "`n"
-			        echo "Stable server app selected"
+			        echo "Stable server selected."
 			        echo "`n"
 
 					Set-SelectedServerApp 'stable'
@@ -2473,7 +3146,7 @@ function MainMenu {
                 #Steam Experimental server app
                 2 {
                     echo "`n"
-				    echo "Experimental server app selected"
+				    echo "Experimental server selected."
 				    echo "`n"
 
 					Set-SelectedServerApp 'exp'
@@ -2486,7 +3159,7 @@ function MainMenu {
                 #Close script
                 3 {
                     echo "`n"
-				    echo "Exit selected"
+				    echo "Exit selected."
 				    echo "`n"
 														
 				    exit 0
@@ -2497,7 +3170,7 @@ function MainMenu {
                 #Force user to select one of provided options
                 Default {
                             echo "`n"
-						    echo "Select number from provided list (1-3)"
+						    echo "Select a number from the list (1-3)."
 						    echo "`n"
 																				
 							Pause-BeforeMenu
