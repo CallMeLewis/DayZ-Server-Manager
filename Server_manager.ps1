@@ -2147,18 +2147,18 @@ function SteamCMDFolder {
 				{
 					$script:folder = $recommendedFolder
 					$folder = $script:folder
-					echo "Using the recommended SteamCMD folder: $folder"
-					echo "`n"
+					Write-Host "Using the recommended SteamCMD folder: $folder"
+					Write-Host ""
 				}
 
-			echo "SteamCMD folder: $folder"
-			echo "`n"
+			Write-Host "SteamCMD folder: $folder"
+			Write-Host ""
 
 			#Create SteamCMD folder if it doesn't exist
 			if (!(Test-Path "$folder"))
 				{
-					echo "Created the SteamCMD folder."
-					echo "`n"
+					Write-Host "Created the SteamCMD folder."
+					Write-Host ""
 
 					mkdir "$folder" >$null
 				}
@@ -2168,30 +2168,30 @@ function SteamCMDFolder {
 			$saveFolder = Read-Host -Prompt 'Save this path for future use? (yes/no)'
 			Write-Host ""
 
-			if ( ($saveFolder -eq "yes") -or ($saveFolder -eq "y")) 
-				{ 	
+			if ( ($saveFolder -eq "yes") -or ($saveFolder -eq "y"))
+				{
 					#Save path to SteamCMD folder in JSON state
 					$state.steamCmdPath = $folder
 					Save-StateConfig $state
-					
-					echo "`n"
-					echo "Saved the SteamCMD path to the state file."
-					echo "`n"
+
+					Write-Host ""
+					Write-Host "Saved the SteamCMD path to the state file."
+					Write-Host ""
 				}
 		} else {
 					#Use saved path to SteamCMD folder
 					$script:folder = $state.steamCmdPath
 					$folder = $script:folder
-					
-					echo "SteamCMD folder: $folder"
-					echo "`n"
-					
+
+					Write-Host "SteamCMD folder: $folder"
+					Write-Host ""
+
 					#Create SteamCMD folder if it doesn't exist
 					if (!(Test-Path "$folder"))
 						{
-							echo "Created the SteamCMD folder."
-							echo "`n"
-							
+							Write-Host "Created the SteamCMD folder."
+							Write-Host ""
+
 							mkdir "$folder" >$null
 						}
 				}
@@ -2210,19 +2210,19 @@ function SteamCMDExe {
 			$steamInst = Read-Host -Prompt "'$folder\steamcmd.exe' was not found. Download and install SteamCMD to this folder? (yes/no)"
 			Write-Host ""
 			
-			if ( ($steamInst -eq "yes") -or ($steamInst -eq "y")) 
-				{ 
-					echo "Downloading and installing SteamCMD..."
-					echo "`n"
+			if ( ($steamInst -eq "yes") -or ($steamInst -eq "y"))
+				{
+					Write-Host "Downloading and installing SteamCMD..."
+					Write-Host ""
 
                     #Get Powershell version for compatibility check
 					$psVer = $PSVersionTable.PSVersion.Major
 
-                    if ($psVer -gt 3) 
-	                    { 
+                    if ($psVer -gt 3)
+	                    {
 
-				            echo "Using PowerShell version $psVer"
-							echo "`n"
+				            Write-Host "Using PowerShell version $psVer"
+							Write-Host ""
 
                             #Download SteamCMD
                             $downloadURL = Get-SteamCmdDownloadUrl
@@ -2238,13 +2238,13 @@ function SteamCMDExe {
                                 {
                                     try
                                         {
-                                            echo "Downloading via Invoke-WebRequest..."
+                                            Write-Host "Downloading via Invoke-WebRequest..."
                                             Invoke-WebRequest -Uri $downloadURL -OutFile $destPath -UseBasicParsing -ErrorAction Stop
                                             if (Test-Path -LiteralPath $destPath) { $downloadSuccess = $true }
                                         }
                                     catch
                                         {
-                                            echo "Invoke-WebRequest failed: $($_.Exception.Message)"
+                                            Write-Host "Invoke-WebRequest failed: $($_.Exception.Message)" -ForegroundColor Yellow
                                         }
                                 }
 
@@ -2253,14 +2253,14 @@ function SteamCMDExe {
                                 {
                                     try
                                         {
-                                            echo "Trying WebClient..."
+                                            Write-Host "Trying WebClient..."
                                             $wc = New-Object System.Net.WebClient
                                             $wc.DownloadFile($downloadURL, $destPath)
                                             if (Test-Path -LiteralPath $destPath) { $downloadSuccess = $true }
                                         }
                                     catch
                                         {
-                                            echo "WebClient failed: $($_.Exception.Message)"
+                                            Write-Host "WebClient failed: $($_.Exception.Message)" -ForegroundColor Yellow
                                         }
                                     finally
                                         {
@@ -2273,24 +2273,24 @@ function SteamCMDExe {
                                 {
                                     try
                                         {
-                                            echo "Trying BITS transfer..."
+                                            Write-Host "Trying BITS transfer..."
                                             Start-BitsTransfer -Source $downloadURL -Destination $destPath -ErrorAction Stop
                                             if (Test-Path -LiteralPath $destPath) { $downloadSuccess = $true }
                                         }
                                     catch
                                         {
-                                            echo "BITS transfer failed: $($_.Exception.Message)"
+                                            Write-Host "BITS transfer failed: $($_.Exception.Message)" -ForegroundColor Yellow
                                         }
                                 }
 
                             if (!$downloadSuccess)
                                 {
-                                    echo "`n"
-                                    echo "All download methods failed."
-                                    echo "Download SteamCMD manually from:"
-                                    echo "  $downloadURL"
-                                    echo "and extract it to: $folder"
-                                    echo "`n"
+                                    Write-Host ""
+                                    Write-Host "All download methods failed." -ForegroundColor Red
+                                    Write-Host "Download SteamCMD manually from:"
+                                    Write-Host "  $downloadURL"
+                                    Write-Host "and extract it to: $folder"
+                                    Write-Host ""
                                     if ($script:startupBootstrapActive) { return $false }
                                     pause
                                     Menu
@@ -2300,8 +2300,8 @@ function SteamCMDExe {
                             #Verify download
                             if (!(Test-Path -LiteralPath $destPath))
                                 {
-                                    echo "Download appeared to succeed but steamcmd.zip was not found at $destPath"
-                                    echo "`n"
+                                    Write-Host "Download appeared to succeed but steamcmd.zip was not found at $destPath" -ForegroundColor Red
+                                    Write-Host ""
                                     if ($script:startupBootstrapActive) { return $false }
                                     pause
                                     Menu
@@ -2309,18 +2309,18 @@ function SteamCMDExe {
                                 }
 
                             $zipSize = (Get-Item -LiteralPath $destPath).Length
-                            echo "Downloaded steamcmd.zip ($zipSize bytes)"
+                            Write-Host "Downloaded steamcmd.zip ($zipSize bytes)"
 
                             #Unzip SteamCMD
-                            echo "Extracting..."
+                            Write-Host "Extracting..."
                             try
                                 {
                                     Expand-Archive -LiteralPath $destPath -DestinationPath "$folder" -Force -ErrorAction Stop
                                 }
                             catch
                                 {
-                                    echo "Expand-Archive failed: $($_.Exception.Message)"
-                                    echo "Trying Shell.Application fallback..."
+                                    Write-Host "Expand-Archive failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                                    Write-Host "Trying Shell.Application fallback..."
                                     try
                                         {
                                             $shell = New-Object -ComObject Shell.Application
@@ -2331,8 +2331,8 @@ function SteamCMDExe {
                                         }
                                     catch
                                         {
-                                            echo "Shell extraction also failed: $($_.Exception.Message)"
-                                            echo "`n"
+                                            Write-Host "Shell extraction also failed: $($_.Exception.Message)" -ForegroundColor Red
+                                            Write-Host ""
                                             if ($script:startupBootstrapActive) { return $false }
                                             pause
                                             Menu
@@ -2343,18 +2343,18 @@ function SteamCMDExe {
 							$steamCmdExe = Join-Path $folder 'steamcmd.exe'
                             if (!(Test-Path -LiteralPath $steamCmdExe))
                                 {
-                                    echo "Extraction completed but steamcmd.exe was not found in $folder"
-                                    echo "`n"
+                                    Write-Host "Extraction completed but steamcmd.exe was not found in $folder" -ForegroundColor Red
+                                    Write-Host ""
                                     if ($script:startupBootstrapActive) { return $false }
                                     pause
                                     Menu
                                     return $false
                                 }
 
-                            echo "Verifying signature..."
+                            Write-Host "Verifying signature..."
 							if (!(Test-ExpectedSigner $steamCmdExe 'Valve Corp\.'))
 								{
-									echo "The downloaded steamcmd.exe file does not have a valid Valve signature. Aborting."
+									Write-Host "The downloaded steamcmd.exe file does not have a valid Valve signature. Aborting." -ForegroundColor Red
 									Remove-Item -LiteralPath $steamCmdExe -Force -ErrorAction SilentlyContinue
 									Remove-Item -LiteralPath $destPath -Force -ErrorAction SilentlyContinue
 									if ($script:startupBootstrapActive)
@@ -2365,12 +2365,12 @@ function SteamCMDExe {
 									Menu
 									return $false
 								}
-						
+
 						#If Powershell version is under 4
-			            } else { 
-						            echo "`n"
-									echo "PowerShell version $psVer is not supported."
-									echo "`n"
+			            } else {
+						            Write-Host ""
+									Write-Host "PowerShell version $psVer is not supported." -ForegroundColor Red
+									Write-Host ""
 					           }
 					
 					#Update SteamCMD to latest version
