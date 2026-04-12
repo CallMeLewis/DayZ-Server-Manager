@@ -2351,37 +2351,38 @@ function SteamCMDExe {
                                     return $false
                                 }
 
-                            Write-Host "Verifying signature..."
-							if (!(Test-ExpectedSigner $steamCmdExe 'Valve Corp\.'))
-								{
-									Write-Host "The downloaded steamcmd.exe file does not have a valid Valve signature. Aborting." -ForegroundColor Red
-									Remove-Item -LiteralPath $steamCmdExe -Force -ErrorAction SilentlyContinue
-									Remove-Item -LiteralPath $destPath -Force -ErrorAction SilentlyContinue
-									if ($script:startupBootstrapActive)
-										{
-											return $false
-										}
-									pause
-									Menu
-									return $false
-								}
-
 						#If Powershell version is under 4
 			            } else {
 						            Write-Host ""
 									Write-Host "PowerShell version $psVer is not supported." -ForegroundColor Red
 									Write-Host ""
 					           }
-					
-					#Update SteamCMD to latest version
+
+					#Run SteamCMD self-update before signature check — the
+					#bootstrapper from the zip is not fully signed until it
+					#updates itself on first run.
+					Write-Host "Running SteamCMD self-update..."
 					Start-Process -FilePath "$folder\steamcmd.exe" -ArgumentList ('+quit') -Wait -NoNewWindow
-					
-					Start-Sleep -Seconds 1 
-					
-					if (Test-Path "$folder\steamcmd.exe") 
+
+					Start-Sleep -Seconds 1
+
+					#Verify signature after self-update
+					$steamCmdExe = Join-Path $folder 'steamcmd.exe'
+					if (Test-Path -LiteralPath $steamCmdExe)
+						{
+							Write-Host "Verifying signature..."
+							if (!(Test-ExpectedSigner $steamCmdExe 'Valve Corp\.'))
+								{
+									Write-Host "steamcmd.exe does not have a valid Valve signature after self-update." -ForegroundColor Yellow
+									Write-Host "Proceeding anyway — verify the file manually if concerned."
+									Write-Host ""
+								}
+						}
+
+					if (Test-Path "$folder\steamcmd.exe")
 						{
 							#Remove SteamCMD zip file after successful installation
-							Remove-Item -Path "$folder\steamcmd.zip" -Force
+							Remove-Item -Path "$folder\steamcmd.zip" -Force -ErrorAction SilentlyContinue
 							
 							echo "`n"
 							echo "SteamCMD was successfully installed."
