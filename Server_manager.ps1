@@ -1277,6 +1277,139 @@ function ConvertTo-ModLaunchString {
 	return (($WorkshopIds | ForEach-Object { "$_;" }) -join '')
 }
 
+function Get-ModIdsFromLaunchParameters {
+	param(
+		[string] $Parameters,
+		[string] $Kind
+	)
+
+	if ([string]::IsNullOrWhiteSpace($Parameters))
+		{
+			return @()
+		}
+
+	$flag = if ($Kind -eq 'serverMods') { 'serverMod' } else { 'mod' }
+
+	# Match quoted form: "-mod=IDs" or unquoted: -mod=IDs
+	$pattern = '"?-' + $flag + '=([^"]*)"?'
+	$match = [regex]::Match($Parameters, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+	if (!$match.Success)
+		{
+			return @()
+		}
+
+	$raw = $match.Groups[1].Value
+	$ids = @($raw -split ';' | Where-Object { $_ -match '^\d{8,}$' })
+	return $ids
+}
+
+function Add-ModToLaunchParameters {
+	param(
+		[string] $Parameters,
+		[string] $Kind,
+		[string] $WorkshopId
+	)
+
+	if ([string]::IsNullOrWhiteSpace($Parameters))
+		{
+			return $Parameters
+		}
+
+	$flag = if ($Kind -eq 'serverMods') { 'serverMod' } else { 'mod' }
+	$existingIds = Get-ModIdsFromLaunchParameters $Parameters $Kind
+
+	if ($existingIds -contains $WorkshopId)
+		{
+			return $Parameters
+		}
+
+	# Check if the flag section exists
+	$pattern = '("?)-' + $flag + '=([^"]*)("?)'
+	$match = [regex]::Match($Parameters, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+	if ($match.Success)
+		{
+			$openQuote = $match.Groups[1].Value
+			$idsSection = $match.Groups[2].Value
+			$closeQuote = $match.Groups[3].Value
+
+			# Append new ID with trailing semicolon
+			$newSection = $idsSection.TrimEnd(';')
+			if ($newSection.Length -gt 0) { $newSection += ';' }
+			$newSection += "$WorkshopId;"
+
+			$replacement = "$openQuote-$flag=$newSection$closeQuote"
+			$result = $Parameters.Substring(0, $match.Index) + $replacement + $Parameters.Substring($match.Index + $match.Length)
+			return $result
+		}
+
+	# Flag section not found; do not insert one automatically
+	return $Parameters
+}
+
+function Remove-ModFromLaunchParameters {
+	param(
+		[string] $Parameters,
+		[string] $WorkshopId
+	)
+
+	if ([string]::IsNullOrWhiteSpace($Parameters))
+		{
+			return $Parameters
+		}
+
+	foreach ($flag in @('mod', 'serverMod'))
+		{
+			$pattern = '("?)-' + $flag + '=([^"]*)("?)'
+			$match = [regex]::Match($Parameters, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+			if (!$match.Success) { continue }
+
+			$openQuote = $match.Groups[1].Value
+			$idsSection = $match.Groups[2].Value
+			$closeQuote = $match.Groups[3].Value
+
+			$ids = @($idsSection -split ';' | Where-Object { $_ -match '^\d{8,}$' -and $_ -ne $WorkshopId })
+			$newIds = if ($ids.Count -gt 0) { ($ids -join ';') + ';' } else { '' }
+
+			$replacement = "$openQuote-$flag=$newIds$closeQuote"
+			$Parameters = $Parameters.Substring(0, $match.Index) + $replacement + $Parameters.Substring($match.Index + $match.Length)
+		}
+
+	return $Parameters
+}
+
+function Set-ModsInLaunchParameters {
+	param(
+		[string] $Parameters,
+		[string] $Kind,
+		[string[]] $WorkshopIds
+	)
+
+	if ([string]::IsNullOrWhiteSpace($Parameters))
+		{
+			return $Parameters
+		}
+
+	$flag = if ($Kind -eq 'serverMods') { 'serverMod' } else { 'mod' }
+	$pattern = '("?)-' + $flag + '=([^"]*)("?)'
+	$match = [regex]::Match($Parameters, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+	if (!$match.Success)
+		{
+			return $Parameters
+		}
+
+	$openQuote = $match.Groups[1].Value
+	$closeQuote = $match.Groups[3].Value
+
+	$newIds = if ($WorkshopIds -and $WorkshopIds.Count -gt 0) { ($WorkshopIds -join ';') + ';' } else { '' }
+	$replacement = "$openQuote-$flag=$newIds$closeQuote"
+	$result = $Parameters.Substring(0, $match.Index) + $replacement + $Parameters.Substring($match.Index + $match.Length)
+	return $result
+}
+
 function Set-GeneratedLaunchMods {
 	param(
 		[string[]] $Mods,
@@ -1824,6 +1957,25 @@ function Add-ConfiguredModFromPrompt {
 				}
 
 	Add-WorkshopModToConfig $config $Kind $workshopId $name $url
+
+	# Offer to add to saved launch parameters if they exist
+	$launchParams = Get-ConfiguredLaunchParameters $config
+	if ($launchParams)
+		{
+			$addToLaunch = Read-Host -Prompt 'Add this mod to saved launch parameters? (y/n)'
+			if ($addToLaunch -eq 'y' -or $addToLaunch -eq 'Y')
+				{
+					$updatedParams = Add-ModToLaunchParameters $launchParams $Kind $workshopId
+					if ($updatedParams -ne $launchParams)
+						{
+							$config.launchParameters = $updatedParams
+							echo "Added to saved launch parameters."
+						} else {
+							echo "Mod is already in launch parameters or the -$( if ($Kind -eq 'serverMods') { 'serverMod' } else { 'mod' } ) flag was not found."
+						}
+				}
+		}
+
 	Save-RootConfig $config
 	Update-GeneratedLaunchFromRootConfig $config
 
@@ -1833,22 +1985,80 @@ function Add-ConfiguredModFromPrompt {
 
 function Remove-ConfiguredModFromPrompt {
 	$config = Get-RootConfig
-	$rawInput = Read-Host -Prompt 'Paste a Steam Workshop URL or mod ID to remove'
-	$workshopId = Get-WorkshopIdFromInput $rawInput
 
-	if (!$workshopId)
+	$allMods = @()
+	foreach ($item in @($config.mods))
 		{
-			echo "No valid Workshop ID was found."
-			echo "`n"
+			if ($item -and $item.workshopId)
+				{
+					$allMods += [pscustomobject]@{ name = $item.name; workshopId = $item.workshopId; kind = 'Client' }
+				}
+		}
+	foreach ($item in @($config.serverMods))
+		{
+			if ($item -and $item.workshopId)
+				{
+					$allMods += [pscustomobject]@{ name = $item.name; workshopId = $item.workshopId; kind = 'Server' }
+				}
+		}
+
+	if ($allMods.Count -eq 0)
+		{
+			Write-Host "No mods are configured."
+			Write-Host ""
 			return
 		}
 
+	Write-Host ""
+	Write-Host " Configured mods:"
+	Write-Host " $([string]::new([char]0x2500, 37))"
+	for ($i = 0; $i -lt $allMods.Count; $i++)
+		{
+			$mod = $allMods[$i]
+			$name = if ([string]::IsNullOrWhiteSpace($mod.name)) { '(unnamed)' } else { $mod.name }
+			$paddedName = $name.PadRight(22)
+			Write-Host "  $($i + 1)) [$($mod.kind)] $paddedName ($($mod.workshopId))"
+		}
+	Write-Host ""
+
+	$rawInput = Read-Host -Prompt 'Select a mod number to remove (or 0 to cancel)'
+
+	if ($rawInput -eq '0')
+		{
+			return $false
+		}
+
+	$index = 0
+	if (-not [int]::TryParse($rawInput, [ref]$index) -or $index -lt 1 -or $index -gt $allMods.Count)
+		{
+			Write-Host "Invalid selection."
+			Write-Host ""
+			return
+		}
+
+	$selected = $allMods[$index - 1]
+	$workshopId = $selected.workshopId
+
 	Remove-WorkshopModFromConfig $config $workshopId
+
+	# Auto-remove from launch parameters if present
+	$launchParams = Get-ConfiguredLaunchParameters $config
+	if ($launchParams)
+		{
+			$updatedParams = Remove-ModFromLaunchParameters $launchParams $workshopId
+			if ($updatedParams -ne $launchParams)
+				{
+					$config.launchParameters = $updatedParams
+					Write-Host "Also removed from saved launch parameters."
+				}
+		}
+
 	Save-RootConfig $config
 	Update-GeneratedLaunchFromRootConfig $config
 
-	echo "Removed Workshop ID $workshopId from the configured mod lists."
-	echo "`n"
+	$displayName = if ([string]::IsNullOrWhiteSpace($selected.name)) { $workshopId } else { "$($selected.name) ($workshopId)" }
+	Write-Host "Removed $displayName from the configured mod lists."
+	Write-Host ""
 }
 
 function Move-ConfiguredModFromPrompt {
@@ -1887,6 +2097,80 @@ function Move-ConfiguredModFromPrompt {
 	echo "`n"
 }
 
+function Edit-LaunchParamModsFromPrompt {
+	param([string] $Kind)
+
+	$config = Get-RootConfig
+	$launchParams = Get-ConfiguredLaunchParameters $config
+
+	if ([string]::IsNullOrWhiteSpace($launchParams))
+		{
+			Write-Host "No saved launch parameters are configured."
+			Write-Host ""
+			return
+		}
+
+	$kindLabel = if ($Kind -eq 'serverMods') { 'Server' } else { 'Client' }
+	$items = @($config.$Kind)
+	$currentIds = Get-ModIdsFromLaunchParameters $launchParams $Kind
+
+	if ($items.Count -eq 0)
+		{
+			Write-Host "No $($kindLabel.ToLower()) mods are configured."
+			Write-Host ""
+			return
+		}
+
+	Write-Host ""
+	Write-Host " Available $kindLabel mods:"
+	Write-Host " $([string]::new([char]0x2500, 37))"
+	for ($i = 0; $i -lt $items.Count; $i++)
+		{
+			$mod = $items[$i]
+			$name = if ([string]::IsNullOrWhiteSpace($mod.name)) { '(unnamed)' } else { $mod.name }
+			$paddedName = $name.PadRight(22)
+			$marker = if ($currentIds -contains $mod.workshopId) { '*' } else { ' ' }
+			Write-Host "  $($i + 1)) $marker $paddedName ($($mod.workshopId))"
+		}
+	Write-Host ""
+	Write-Host " * = currently in launch parameters"
+	Write-Host ""
+
+	$rawInput = Read-Host -Prompt 'Enter mod numbers to load (e.g. 1,3,4 or 1 2 3) or 0 to cancel'
+
+	if ($rawInput -eq '0')
+		{
+			return $false
+		}
+
+	# Parse selection: support comma-separated, space-separated, or mixed
+	$tokens = @($rawInput -split '[,\s]+' | Where-Object { $_ -match '^\d+$' })
+	$selectedIds = @()
+
+	foreach ($token in $tokens)
+		{
+			$num = [int]$token
+			if ($num -ge 1 -and $num -le $items.Count)
+				{
+					$id = $items[$num - 1].workshopId
+					if ($selectedIds -notcontains $id)
+						{
+							$selectedIds += $id
+						}
+				} else {
+					Write-Host "Skipped invalid number: $token"
+				}
+		}
+
+	$updatedParams = Set-ModsInLaunchParameters $launchParams $Kind $selectedIds
+	$config.launchParameters = $updatedParams
+	Save-RootConfig $config
+
+	Write-Host ""
+	Write-Host "Launch parameters updated with $($selectedIds.Count) $($kindLabel.ToLower()) mod(s)."
+	Write-Host ""
+}
+
 function ModManager_menu {
 	while ($true)
 		{
@@ -1899,7 +2183,9 @@ function ModManager_menu {
 			echo " 4) Add server mod"
 			echo " 5) Move mod between client and server lists"
 			echo " 6) Remove mod from configuration"
-			echo " 7) Back to Main Menu"
+			echo " 7) Edit client mods in launch parameters"
+			echo " 8) Edit server mods in launch parameters"
+			echo " 9) Back to Main Menu"
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo ""
 
@@ -1931,16 +2217,26 @@ function ModManager_menu {
 						continue
 					}
 					6 {
-						Remove-ConfiguredModFromPrompt
-						Pause-BeforeMenu
+						$result = Remove-ConfiguredModFromPrompt
+						if ($result -ne $false) { Pause-BeforeMenu }
 						continue
 					}
 					7 {
+						$result = Edit-LaunchParamModsFromPrompt 'mods'
+						if ($result -ne $false) { Pause-BeforeMenu }
+						continue
+					}
+					8 {
+						$result = Edit-LaunchParamModsFromPrompt 'serverMods'
+						if ($result -ne $false) { Pause-BeforeMenu }
+						continue
+					}
+					9 {
 						return
 					}
 					Default {
 						echo "`n"
-						echo "Select a number from the list (1-7)."
+						echo "Select a number from the list (1-9)."
 						echo "`n"
 						Pause-BeforeMenu
 						continue
