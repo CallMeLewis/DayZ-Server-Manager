@@ -57,11 +57,11 @@ Stored in the current Windows user documents folder:
 This file contains the current runtime state used by the manager:
 
 - SteamCMD path
-- Saved Steam download login state
+- Saved SteamCMD account state
 - Generated launch mod strings
 - Tracked DayZ server process metadata
 
-Saved Steam download credentials are encrypted for the current Windows user. You can also choose a one-time login that is kept only for the current PowerShell session.
+Saved SteamCMD account credentials are encrypted for the current Windows user. You can also choose a one-time account login that is kept only for the current PowerShell session.
 If Steam Guard is enabled, SteamCMD may require either Steam app confirmation or an email code during sign-in. When Steam Guard uses email, SteamCMD asks for that code in the same console window after the password step.
 
 ## Usage
@@ -76,9 +76,9 @@ On first run, the script only sets up SteamCMD. It does not ask for Steam creden
 
 When you choose `Update server` or `Update mods`, the manager will:
 
-- use the saved download login if one is already configured
-- otherwise prompt you to `Use login once` or `Save login securely`
-- let you clear the saved download login from `Configure download login`
+- use the saved SteamCMD account if one is already configured
+- otherwise prompt you to `Use account once` or `Save account securely`
+- let you clear the saved SteamCMD account from `Configure SteamCMD account`
 
 If SteamCMD sign-in fails, the manager shows guided retry options and marks the main menu status as `Last sign-in failed` until the login is corrected.
 

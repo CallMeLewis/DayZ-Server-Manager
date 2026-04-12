@@ -223,7 +223,7 @@ function Show-MainMenuStatus {
 					Write-Host $serverStatus -ForegroundColor Yellow
 				}
 	Write-Host " Server directory: $serverDirectory"
-	Write-Host " Download login  : $steamLoginStatus"
+	Write-Host " SteamCMD account: $steamLoginStatus"
 	Write-Host " ---------------------------------------"
 	Write-Host ""
 }
@@ -883,11 +883,11 @@ function Get-ActiveSteamCmdCredential {
 }
 
 function Request-SteamCmdDownloadCredential {
-	Write-Host "Download login required"
-	Write-Host "-----------------------"
-	Write-Host "Choose how to use your Steam login for this download."
-	Write-Host "1) Use login once"
-	Write-Host "2) Save login securely"
+	Write-Host "SteamCMD account required"
+	Write-Host "-------------------------"
+	Write-Host "Choose how to use your Steam account for this download."
+	Write-Host "1) Use account once"
+	Write-Host "2) Save account securely"
 	Write-Host "3) Cancel"
 	Write-Host ""
 
@@ -1546,18 +1546,18 @@ function ModManager_menu {
 }
 
 
-#Download login menu
+#SteamCMD account menu
 function DownloadLogin_menu {
-	Show-MenuHeader 'Download Login'
+	Show-MenuHeader 'SteamCMD Account'
 
-	echo "Steam account required for DayZ server and mod downloads."
+	echo "SteamCMD uses this account for DayZ server and mod downloads."
 	echo "Credentials are encrypted for the current Windows user."
-	echo "Use login once does not save your credentials."
+	echo "Using this account once does not save your credentials."
 	echo "`n"
 
-	echo "1) Use login once"
-	echo "2) Save login securely"
-	echo "3) Clear saved login"
+	echo "1) Use account once"
+	echo "2) Save account securely"
+	echo "3) Clear saved account"
 	echo "4) Back to Main Menu"
 	echo "`n"
 
@@ -1585,9 +1585,9 @@ function DownloadLogin_menu {
 				echo "`n"
 				if (Clear-SteamCmdCredential)
 					{
-						echo "Cleared the saved download login."
+						echo "Cleared the saved SteamCMD account."
 					} else {
-						echo "No saved download login was found."
+						echo "No saved SteamCMD account was found."
 					}
 				echo "`n"
 				Pause-BeforeMenu
@@ -1621,7 +1621,7 @@ function Menu {
 	echo "4) Stop server"
 	echo "5) Remove / Uninstall"
 	echo "6) Manage mods"
-	echo "7) Configure download login"
+	echo "7) Configure SteamCMD account"
 	echo "8) Exit"
 	echo "`n"
 
@@ -1727,10 +1727,10 @@ function Menu {
                 Break
             }
 
-            #Configure download login
+            #Configure SteamCMD account
             7 {
 				echo "`n"
-				echo "Configure download login selected."
+				echo "Configure SteamCMD account selected."
 				echo "`n"
 				DownloadLogin_menu
                 
@@ -2094,10 +2094,10 @@ function Test-SteamCmdSignInFailure {
 function Request-SteamCmdRetryCredential {
 	Write-Host "Steam sign-in failed"
 	Write-Host "-------------------"
-	Write-Host "Choose how to retry the Steam login."
+	Write-Host "Choose how to retry the SteamCMD account sign-in."
 	Write-Host "If Steam Guard uses email, SteamCMD will ask for the code in this same window after you enter your password."
-	Write-Host "1) Re-enter login once"
-	Write-Host "2) Clear saved login and re-enter"
+	Write-Host "1) Re-enter account once"
+	Write-Host "2) Clear saved account and re-enter"
 	Write-Host "3) Cancel"
 	Write-Host ""
 
@@ -2153,8 +2153,8 @@ function Invoke-SteamCmdAuthenticatedOperation {
 	$credential = Resolve-SteamCmdDownloadCredential
 	if (!$credential)
 		{
-			echo "Steam download login was not configured."
-			echo "Open Configure download login and try again."
+			echo "SteamCMD account was not configured."
+			echo "Open Configure SteamCMD account and try again."
 			echo "`n"
 			return $null
 		}
