@@ -233,7 +233,7 @@ function Show-MainMenuStatus {
 
 			if ([string]::IsNullOrWhiteSpace($activeName))
 				{
-					Write-Host " Active group: " -NoNewline
+					Write-Host "  Active group : " -NoNewline
 					Write-Host "<none>" -ForegroundColor Yellow
 				}
 			else
@@ -241,7 +241,7 @@ function Show-MainMenuStatus {
 					$group = Get-ModGroupByName $groups $activeName
 					if (!$group)
 						{
-							Write-Host " Active group: " -NoNewline
+							Write-Host "  Active group : " -NoNewline
 							Write-Host "$activeName (missing)" -ForegroundColor Yellow
 						}
 					else
@@ -251,7 +251,7 @@ function Show-MainMenuStatus {
 							$serverModCount = @($group.serverMods).Count
 							$danglingCount = @($resolved.DanglingMods).Count + @($resolved.DanglingServerMods).Count
 
-							$line = " Active group: $activeName   ($modCount mods, $serverModCount serverMods)"
+							$line = "  Active group : $activeName   ($modCount mods, $serverModCount serverMods)"
 							Write-Host $line
 							if ($danglingCount -gt 0)
 								{
@@ -1979,6 +1979,8 @@ function Invoke-ModGroupChecklistEditor {
 			Clear-MenuScreen
 			Write-Host ""
 			Write-Host "Editing group: $($Group.name)"
+			Write-Host ""
+			Write-Host "After saving, you'll choose the map/mission for this group."
 			Write-Host ""
 
 			$rowIndex = 0
