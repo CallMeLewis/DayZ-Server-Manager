@@ -1745,6 +1745,19 @@ function Sync-LaunchParametersFromActiveGroup {
 	$Config.launchParameters = $updated
 }
 
+function Sync-ServerConfigMission {
+	param($Config, [string] $Mission)
+
+	if (!$Config -or [string]::IsNullOrWhiteSpace($Mission)) { return $false }
+	if (-not ($Config.PSObject.Properties.Name -contains 'serverFolder')) { return $false }
+	$cfgPath = Join-Path $Config.serverFolder 'serverDZ.cfg'
+	if (-not (Test-Path -LiteralPath $cfgPath)) { return $false }
+	$text = Get-Content -LiteralPath $cfgPath -Raw
+	$updated = Set-MissionFolderInServerConfigText $text $Mission
+	if ($updated -ne $text) { Set-Content -LiteralPath $cfgPath -Value $updated }
+	return $true
+}
+
 function Set-ActiveModGroup {
 	param(
 		$Config,
@@ -1767,6 +1780,10 @@ function Set-ActiveModGroup {
 		}
 
 	Sync-LaunchParametersFromActiveGroup $Config
+	if ($target.PSObject.Properties.Name -contains 'mission' -and -not [string]::IsNullOrWhiteSpace($target.mission))
+		{
+			Sync-ServerConfigMission $Config $target.mission
+		}
 	return $true
 }
 
