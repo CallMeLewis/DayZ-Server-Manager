@@ -224,7 +224,6 @@ function Show-MainMenuStatus {
 				}
 	Write-Host "  Directory : $serverDirectory"
 	Write-Host "  Account   : $steamLoginStatus"
-	Write-Host " $([string]::new([char]0x2500, 37))"
 
 	$config = Get-RootConfig
 	if ($config)
@@ -262,6 +261,7 @@ function Show-MainMenuStatus {
 				}
 		}
 
+	Write-Host " $([string]::new([char]0x2500, 37))"
 	Write-Host ""
 }
 
@@ -2793,7 +2793,11 @@ function ModGroupManager_menu {
 					3 { Rename-ModGroupFromPrompt; Pause-BeforeMenu; continue }
 					4 { Copy-ModGroupFromPrompt; Pause-BeforeMenu; continue }
 					5 { Remove-ModGroupFromPrompt; Pause-BeforeMenu; continue }
-					6 { Show-ModGroupDetail; Pause-BeforeMenu; continue }
+					6 {
+						$result = Show-ModGroupDetail
+						if ($result -ne $false) { Pause-BeforeMenu }
+						continue
+					}
 					7 { return }
 					Default {
 						echo "`n"
@@ -3009,11 +3013,11 @@ function Remove-ModGroupFromPrompt {
 
 function Show-ModGroupDetail {
 	$config = Get-RootConfig
-	if (!$config) { return }
+	if (!$config) { return $false }
 
 	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
 	$group = Select-ModGroupFromList $groups 'Select a group to view'
-	if (!$group) { return }
+	if (!$group) { return $false }
 
 	$resolved = Resolve-ModGroupAgainstLibrary $config $group
 
@@ -3042,6 +3046,7 @@ function Show-ModGroupDetail {
 			Write-Host "   [dangling] $id"
 		}
 	Write-Host ""
+	return $true
 }
 
 
