@@ -664,7 +664,23 @@ function Invoke-ModGroupsMigration {
 			$serverModIds = Get-ModIdsFromLaunchParameters $Config.launchParameters 'serverMods'
 		}
 
+	$mission = $null
+	$serverFolder = $Config.serverFolder
+	if (-not [string]::IsNullOrWhiteSpace($serverFolder))
+		{
+			$serverConfigPath = Join-Path $serverFolder 'serverDZ.cfg'
+			if (Test-Path -LiteralPath $serverConfigPath)
+				{
+					$text = Get-Content -LiteralPath $serverConfigPath -Raw -ErrorAction SilentlyContinue
+					$mission = Get-MissionFolderFromServerConfigText $text
+				}
+		}
+
 	$defaultGroup = New-DefaultModGroup -Name 'Default' -Mods $modIds -ServerMods $serverModIds
+	if ($mission)
+		{
+			$defaultGroup | Add-Member -NotePropertyName mission -NotePropertyValue $mission -Force
+		}
 	$Config | Add-Member -NotePropertyName modGroups -NotePropertyValue @($defaultGroup) -Force
 	$Config | Add-Member -NotePropertyName activeGroup -NotePropertyValue 'Default' -Force
 
@@ -1441,6 +1457,40 @@ function Set-MissionFolderInServerConfigText {
 		}
 
 	return [regex]::Replace($Text, $pattern, "template=`"$Mission`"", 'IgnoreCase')
+}
+
+function Get-MissionFolderOptions {
+	param([string] $ServerFolder)
+	if ([string]::IsNullOrWhiteSpace($ServerFolder)) { return @() }
+	$mp = Join-Path $ServerFolder 'mpmissions'
+	if (-not (Test-Path -LiteralPath $mp)) { return @() }
+	return @(Get-ChildItem -LiteralPath $mp -Directory | Select-Object -ExpandProperty Name)
+}
+
+function Select-MissionFromList {
+	param([string] $ServerFolder, [string] $Prompt)
+	$options = Get-MissionFolderOptions $ServerFolder
+	if (@($options).Count -eq 0)
+		{
+			return (Read-Host -Prompt "$Prompt (enter folder name)")
+		}
+
+	Write-Host ""
+	Write-Host " Missions:"
+	Write-Host " $([string]::new([char]0x2500, 37))"
+	for ($i = 0; $i -lt $options.Count; $i++)
+		{
+			Write-Host "  $($i + 1)) $($options[$i])"
+		}
+	Write-Host ""
+
+	$raw = Read-Host -Prompt "$Prompt (0 to enter manually)"
+	if ($raw -eq '0') { return (Read-Host -Prompt 'Enter mission folder name') }
+
+	$idx = 0
+	if (-not [int]::TryParse($raw, [ref] $idx) -or $idx -lt 1 -or $idx -gt $options.Count) { return $null }
+
+	return $options[$idx - 1]
 }
 
 function ConvertTo-ModLaunchString {
@@ -2926,6 +2976,18 @@ function New-ModGroupFromPrompt {
 
 	$group.mods = @($result.Mods)
 	$group.serverMods = @($result.ServerMods)
+	$mission = Select-MissionFromList $config.serverFolder 'Select mission'
+	if ($mission)
+		{
+			if ($group.PSObject.Properties.Name -contains 'mission')
+				{
+					$group.mission = $mission
+				}
+			else
+				{
+					$group | Add-Member -NotePropertyName mission -NotePropertyValue $mission -Force
+				}
+		}
 
 	$updatedGroups = @($groups) + $group
 	if ($config.PSObject.Properties.Name -contains 'modGroups')
@@ -2960,6 +3022,18 @@ function Edit-ModGroupFromPrompt {
 
 	$group.mods = @($result.Mods)
 	$group.serverMods = @($result.ServerMods)
+	$mission = Select-MissionFromList $config.serverFolder 'Select mission'
+	if ($mission)
+		{
+			if ($group.PSObject.Properties.Name -contains 'mission')
+				{
+					$group.mission = $mission
+				}
+			else
+				{
+					$group | Add-Member -NotePropertyName mission -NotePropertyValue $mission -Force
+				}
+		}
 
 	if ($config.activeGroup -eq $group.name)
 		{
@@ -3077,6 +3151,11 @@ function Show-ModGroupDetail {
 	Write-Host ""
 	Write-Host " Group: $($group.name)"
 	Write-Host " $([string]::new([char]0x2500, 37))"
+	if ($group.PSObject.Properties.Name -contains 'mission' -and $group.mission)
+		{
+			Write-Host " MAP: $($group.mission)"
+			Write-Host ""
+		}
 	Write-Host " MODS ($(@($group.mods).Count))"
 	foreach ($m in $resolved.ResolvedMods)
 		{
