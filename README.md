@@ -18,6 +18,15 @@ I am not claiming authorship of the original server manager script. This project
 - Start the DayZ server with default or user launch parameters
 - Stop tracked DayZ server processes
 - Manage client and server mod lists from the interactive menu
+- Manage mod groups: named mod profiles you can switch in one step
+
+## New: Mod Groups
+
+Mod groups let you save multiple named mod profiles and swap them in seconds.
+
+- Create, edit, rename, clone, delete, or view groups from `Manage mod groups`
+- Switch the active group from the main menu to instantly rewrite `-mod` and `-serverMod`
+- The first run migrates your current launch parameters into a `Default` group
 
 ## Requirements
 
