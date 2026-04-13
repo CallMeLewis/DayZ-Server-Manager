@@ -1407,6 +1407,42 @@ function Get-ConfiguredLaunchParameters {
 	return $Config.launchParameters
 }
 
+function Get-MissionFolderFromServerConfigText {
+	param([string] $Text)
+
+	if ([string]::IsNullOrWhiteSpace($Text))
+		{
+			return $null
+		}
+
+	$match = [regex]::Match($Text, 'template\s*=\s*"([^"]+)"', 'IgnoreCase')
+
+	if (!$match.Success)
+		{
+			return $null
+		}
+
+	return $match.Groups[1].Value
+}
+
+function Set-MissionFolderInServerConfigText {
+	param([string] $Text, [string] $Mission)
+
+	if ([string]::IsNullOrWhiteSpace($Text) -or [string]::IsNullOrWhiteSpace($Mission))
+		{
+			return $Text
+		}
+
+	$pattern = 'template\s*=\s*"([^"]+)"'
+
+	if ($Text -notmatch $pattern)
+		{
+			return $Text
+		}
+
+	return [regex]::Replace($Text, $pattern, "template=`"$Mission`"", 'IgnoreCase')
+}
+
 function ConvertTo-ModLaunchString {
 	param([string[]] $WorkshopIds)
 
