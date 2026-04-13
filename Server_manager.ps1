@@ -225,6 +225,43 @@ function Show-MainMenuStatus {
 	Write-Host "  Directory : $serverDirectory"
 	Write-Host "  Account   : $steamLoginStatus"
 	Write-Host " $([string]::new([char]0x2500, 37))"
+
+	$config = Get-RootConfig
+	if ($config)
+		{
+			$activeName = if ($config.PSObject.Properties.Name -contains 'activeGroup') { [string] $config.activeGroup } else { '' }
+			$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
+
+			if ([string]::IsNullOrWhiteSpace($activeName))
+				{
+					Write-Host " Active group: " -NoNewline
+					Write-Host "<none>" -ForegroundColor Yellow
+				}
+			else
+				{
+					$group = Get-ModGroupByName $groups $activeName
+					if (!$group)
+						{
+							Write-Host " Active group: " -NoNewline
+							Write-Host "$activeName (missing)" -ForegroundColor Yellow
+						}
+					else
+						{
+							$resolved = Resolve-ModGroupAgainstLibrary $config $group
+							$modCount = @($group.mods).Count
+							$serverModCount = @($group.serverMods).Count
+							$danglingCount = @($resolved.DanglingMods).Count + @($resolved.DanglingServerMods).Count
+
+							$line = " Active group: $activeName   ($modCount mods, $serverModCount serverMods)"
+							Write-Host $line
+							if ($danglingCount -gt 0)
+								{
+									Write-Host "   [!] $danglingCount dangling id(s) - open Manage mod groups to fix" -ForegroundColor Yellow
+								}
+						}
+				}
+		}
+
 	Write-Host ""
 }
 
@@ -602,6 +639,89 @@ function Initialize-RootConfig {
 	return @($report)
 }
 
+function Invoke-ModGroupsMigration {
+	param($Config)
+
+	if (!$Config) { return $false }
+
+	$hasGroups = $Config.PSObject.Properties.Name -contains 'modGroups' -and $Config.modGroups
+	if ($hasGroups)
+		{
+			if (-not ($Config.PSObject.Properties.Name -contains 'activeGroup'))
+				{
+					$firstName = if (@($Config.modGroups).Count -gt 0) { [string] $Config.modGroups[0].name } else { '' }
+					$Config | Add-Member -NotePropertyName activeGroup -NotePropertyValue $firstName -Force
+					return $true
+				}
+			return $false
+		}
+
+	$modIds = @()
+	$serverModIds = @()
+	if ($Config.PSObject.Properties.Name -contains 'launchParameters' -and $Config.launchParameters)
+		{
+			$modIds = Get-ModIdsFromLaunchParameters $Config.launchParameters 'mods'
+			$serverModIds = Get-ModIdsFromLaunchParameters $Config.launchParameters 'serverMods'
+		}
+
+	$defaultGroup = New-DefaultModGroup -Name 'Default' -Mods $modIds -ServerMods $serverModIds
+	$Config | Add-Member -NotePropertyName modGroups -NotePropertyValue @($defaultGroup) -Force
+	$Config | Add-Member -NotePropertyName activeGroup -NotePropertyValue 'Default' -Force
+
+	return $true
+}
+
+function Select-ActiveModGroupFromPrompt {
+	$config = Get-RootConfig
+	if (!$config) { return }
+
+	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
+	if (@($groups).Count -eq 0)
+		{
+			Write-Host "No mod groups are defined. Use Manage mod groups to create one."
+			Write-Host ""
+			return
+		}
+
+	Write-Host ""
+	Write-Host " Available mod groups:"
+	Write-Host " $([string]::new([char]0x2500, 37))"
+	for ($i = 0; $i -lt $groups.Count; $i++)
+		{
+			$g = $groups[$i]
+			$marker = if ($config.activeGroup -eq $g.name) { '*' } else { ' ' }
+			$modCount = @($g.mods).Count
+			$smCount = @($g.serverMods).Count
+			Write-Host "  $($i + 1)) $marker $($g.name) ($modCount mods, $smCount serverMods)"
+		}
+	Write-Host ""
+	Write-Host " * = currently active"
+	Write-Host ""
+
+	$raw = Read-Host -Prompt 'Select a group number (or 0 to cancel)'
+	if ($raw -eq '0') { return }
+
+	$index = 0
+	if (-not [int]::TryParse($raw, [ref]$index) -or $index -lt 1 -or $index -gt $groups.Count)
+		{
+			Write-Host "Invalid selection."
+			Write-Host ""
+			return
+		}
+
+	$selected = $groups[$index - 1]
+	if (Set-ActiveModGroup $config $selected.name)
+		{
+			Save-RootConfig $config
+			Write-Host "Switched active group to '$($selected.name)'."
+		}
+	else
+		{
+			Write-Host "Could not switch to '$($selected.name)'."
+		}
+	Write-Host ""
+}
+
 function Initialize-StateConfig {
 	param(
 		[string] $StateRoot,
@@ -752,7 +872,28 @@ function New-DefaultStateConfig {
 }
 
 function Get-RootConfig {
-	return Get-JsonFile $rootConfigPath
+	$config = Get-JsonFile $rootConfigPath
+	if (!$config) { return $config }
+
+	$changed = Invoke-ModGroupsMigration $config
+	if ($changed)
+		{
+			$backupPath = "$rootConfigPath.bak"
+			if (-not (Test-Path -LiteralPath $backupPath))
+				{
+					try
+						{
+							Copy-Item -LiteralPath $rootConfigPath -Destination $backupPath -Force
+						}
+					catch
+						{
+							Write-Host "Warning: could not write mod-groups migration backup: $_"
+						}
+				}
+			Save-RootConfig $config
+		}
+
+	return $config
 }
 
 function Save-RootConfig {
@@ -1410,6 +1551,462 @@ function Set-ModsInLaunchParameters {
 	return $result
 }
 
+function New-DefaultModGroup {
+	param(
+		[string] $Name,
+		[string[]] $Mods = @(),
+		[string[]] $ServerMods = @()
+	)
+
+	$normalizedMods = @($Mods | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) })
+	$normalizedServerMods = @($ServerMods | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) })
+
+	return [pscustomobject]@{
+		name       = $Name
+		mods       = @($normalizedMods)
+		serverMods = @($normalizedServerMods)
+	}
+}
+
+function Test-ModGroupNameValid {
+	param(
+		[string] $Name,
+		$ExistingGroups,
+		[string] $IgnoreName = $null
+	)
+
+	if ([string]::IsNullOrWhiteSpace($Name))
+		{
+			return $false
+		}
+
+	if ($Name.Length -gt 64)
+		{
+			return $false
+		}
+
+	$lower = $Name.ToLowerInvariant()
+	$ignoreLower = if ($IgnoreName) { $IgnoreName.ToLowerInvariant() } else { $null }
+
+	foreach ($group in @($ExistingGroups))
+		{
+			if (!$group -or !$group.name) { continue }
+			$existingLower = ([string] $group.name).ToLowerInvariant()
+			if ($ignoreLower -and $existingLower -eq $ignoreLower) { continue }
+			if ($existingLower -eq $lower) { return $false }
+		}
+
+	return $true
+}
+
+function Get-ModGroupByName {
+	param(
+		$Groups,
+		[string] $Name
+	)
+
+	if (!$Groups -or [string]::IsNullOrWhiteSpace($Name))
+		{
+			return $null
+		}
+
+	$lower = $Name.ToLowerInvariant()
+	foreach ($group in @($Groups))
+		{
+			if (!$group -or !$group.name) { continue }
+			if (([string] $group.name).ToLowerInvariant() -eq $lower)
+				{
+					return $group
+				}
+		}
+
+	return $null
+}
+
+function Resolve-ModGroupAgainstLibrary {
+	param(
+		$Config,
+		$Group
+	)
+
+	$libraryMods = if ($Config -and $Config.mods) { @($Config.mods | Where-Object { $_ -and $_.workshopId }) } else { @() }
+	$libraryServerMods = if ($Config -and $Config.serverMods) { @($Config.serverMods | Where-Object { $_ -and $_.workshopId }) } else { @() }
+
+	$groupModIds = if ($Group -and $Group.mods) { @($Group.mods | Where-Object { $_ }) } else { @() }
+	$groupServerModIds = if ($Group -and $Group.serverMods) { @($Group.serverMods | Where-Object { $_ }) } else { @() }
+
+	$resolvedMods = @()
+	$danglingMods = @()
+	foreach ($id in $groupModIds)
+		{
+			$match = $libraryMods | Where-Object { $_.workshopId -eq $id } | Select-Object -First 1
+			if ($match) { $resolvedMods += $match } else { $danglingMods += $id }
+		}
+
+	$resolvedServerMods = @()
+	$danglingServerMods = @()
+	foreach ($id in $groupServerModIds)
+		{
+			$match = $libraryServerMods | Where-Object { $_.workshopId -eq $id } | Select-Object -First 1
+			if ($match) { $resolvedServerMods += $match } else { $danglingServerMods += $id }
+		}
+
+	return [pscustomobject]@{
+		ResolvedMods       = $resolvedMods
+		DanglingMods       = $danglingMods
+		ResolvedServerMods = $resolvedServerMods
+		DanglingServerMods = $danglingServerMods
+	}
+}
+
+function Get-GroupsReferencingMod {
+	param(
+		$Groups,
+		[string] $WorkshopId,
+		[ValidateSet('mods','serverMods')]
+		[string] $Kind
+	)
+
+	$result = @()
+	foreach ($group in @($Groups))
+		{
+			if (!$group) { continue }
+			$ids = if ($group.$Kind) { @($group.$Kind) } else { @() }
+			if ($ids -contains $WorkshopId)
+				{
+					$result += $group
+				}
+		}
+
+	return $result
+}
+
+function Sync-LaunchParametersFromActiveGroup {
+	param($Config)
+
+	if (!$Config) { return }
+	if (-not ($Config.PSObject.Properties.Name -contains 'launchParameters')) { return }
+	if ([string]::IsNullOrWhiteSpace($Config.launchParameters)) { return }
+
+	$activeName = if ($Config.PSObject.Properties.Name -contains 'activeGroup') { [string] $Config.activeGroup } else { '' }
+	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
+
+	$modIds = @()
+	$serverModIds = @()
+
+	if (-not [string]::IsNullOrWhiteSpace($activeName))
+		{
+			$group = Get-ModGroupByName $groups $activeName
+			if ($group)
+				{
+					$modIds = if ($group.mods) { @($group.mods | Where-Object { $_ }) } else { @() }
+					$serverModIds = if ($group.serverMods) { @($group.serverMods | Where-Object { $_ }) } else { @() }
+				}
+		}
+
+	$updated = Set-ModsInLaunchParameters $Config.launchParameters 'mods' $modIds
+	$updated = Set-ModsInLaunchParameters $updated 'serverMods' $serverModIds
+	$Config.launchParameters = $updated
+}
+
+function Set-ActiveModGroup {
+	param(
+		$Config,
+		[string] $GroupName
+	)
+
+	if (!$Config) { return $false }
+
+	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
+	$target = Get-ModGroupByName $groups $GroupName
+	if (!$target) { return $false }
+
+	if (-not ($Config.PSObject.Properties.Name -contains 'activeGroup'))
+		{
+			$Config | Add-Member -NotePropertyName activeGroup -NotePropertyValue $target.name -Force
+		}
+	else
+		{
+			$Config.activeGroup = $target.name
+		}
+
+	Sync-LaunchParametersFromActiveGroup $Config
+	return $true
+}
+
+function Rename-ModGroup {
+	param(
+		$Config,
+		[string] $OldName,
+		[string] $NewName
+	)
+
+	if (!$Config) { return $false }
+	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
+	$target = Get-ModGroupByName $groups $OldName
+	if (!$target) { return $false }
+
+	if (-not (Test-ModGroupNameValid $NewName $groups -IgnoreName $OldName)) { return $false }
+
+	$target.name = $NewName.Trim()
+	if ($Config.activeGroup -eq $OldName)
+		{
+			$Config.activeGroup = $target.name
+		}
+	return $true
+}
+
+function Remove-ModGroup {
+	param(
+		$Config,
+		[string] $Name
+	)
+
+	if (!$Config) { return $false }
+	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
+	if (@($groups).Count -le 1) { return $false }
+	if ($Config.activeGroup -eq $Name) { return $false }
+
+	$target = Get-ModGroupByName $groups $Name
+	if (!$target) { return $false }
+
+	$Config.modGroups = @($groups | Where-Object { $_.name -ne $target.name })
+	return $true
+}
+
+function Remove-ModFromAllGroups {
+	param(
+		$Config,
+		[string] $WorkshopId,
+		[ValidateSet('mods','serverMods')]
+		[string] $Kind
+	)
+
+	if (!$Config) { return }
+	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
+
+	$affectedActive = $false
+	foreach ($group in $groups)
+		{
+			$ids = if ($group.$Kind) { @($group.$Kind) } else { @() }
+			if ($ids -contains $WorkshopId)
+				{
+					$group.$Kind = @($ids | Where-Object { $_ -ne $WorkshopId })
+					if ($Config.activeGroup -eq $group.name) { $affectedActive = $true }
+				}
+		}
+
+	if ($affectedActive)
+		{
+			Sync-LaunchParametersFromActiveGroup $Config
+		}
+}
+
+function ConvertFrom-ChecklistInput {
+	param(
+		[string] $InputText,
+		[int] $MaxIndex
+	)
+
+	if ([string]::IsNullOrWhiteSpace($InputText)) { return @() }
+
+	$result = @()
+	$tokens = $InputText -split '[,\s]+' | Where-Object { $_ }
+	foreach ($token in $tokens)
+		{
+			if ($token -match '^\s*(\d+)\s*-\s*(\d+)\s*$')
+				{
+					$a = [int] $Matches[1]
+					$b = [int] $Matches[2]
+					if ($a -gt $b) { $tmp = $a; $a = $b; $b = $tmp }
+					for ($i = $a; $i -le $b; $i++)
+						{
+							if ($i -ge 1 -and $i -le $MaxIndex -and ($result -notcontains $i))
+								{
+									$result += $i
+								}
+						}
+				}
+			elseif ($token -match '^\d+$')
+				{
+					$n = [int] $token
+					if ($n -ge 1 -and $n -le $MaxIndex -and ($result -notcontains $n))
+						{
+							$result += $n
+						}
+				}
+		}
+
+	return $result
+}
+
+function Invoke-ModGroupChecklistEditor {
+	param(
+		$Config,
+		$Group
+	)
+
+	$libraryMods = if ($Config.mods) { @($Config.mods | Where-Object { $_ -and $_.workshopId }) } else { @() }
+	$libraryServerMods = if ($Config.serverMods) { @($Config.serverMods | Where-Object { $_ -and $_.workshopId }) } else { @() }
+
+	$selectedMods = @{}
+	$selectedServerMods = @{}
+	foreach ($id in @($Group.mods)) { if ($id) { $selectedMods[$id] = $true } }
+	foreach ($id in @($Group.serverMods)) { if ($id) { $selectedServerMods[$id] = $true } }
+
+	while ($true)
+		{
+			Clear-MenuScreen
+			Write-Host ""
+			Write-Host "Editing group: $($Group.name)"
+			Write-Host ""
+
+			$rowIndex = 0
+			$rowKinds = @()
+			$rowIds = @()
+
+			Write-Host "MODS"
+			foreach ($mod in $libraryMods)
+				{
+					$rowIndex++
+					$rowKinds += 'mods'
+					$rowIds += $mod.workshopId
+					$name = if ([string]::IsNullOrWhiteSpace($mod.name)) { '(unnamed)' } else { $mod.name }
+					$mark = if ($selectedMods.ContainsKey($mod.workshopId)) { 'x' } else { ' ' }
+					$pad = $name.PadRight(30)
+					Write-Host ("  [{0}] {1,3}. {2} ({3})" -f $mark, $rowIndex, $pad, $mod.workshopId)
+				}
+
+			Write-Host ""
+			Write-Host "SERVER MODS"
+			foreach ($mod in $libraryServerMods)
+				{
+					$rowIndex++
+					$rowKinds += 'serverMods'
+					$rowIds += $mod.workshopId
+					$name = if ([string]::IsNullOrWhiteSpace($mod.name)) { '(unnamed)' } else { $mod.name }
+					$mark = if ($selectedServerMods.ContainsKey($mod.workshopId)) { 'x' } else { ' ' }
+					$pad = $name.PadRight(30)
+					Write-Host ("  [{0}] {1,3}. {2} ({3})" -f $mark, $rowIndex, $pad, $mod.workshopId)
+				}
+
+			$danglingMods = @()
+			foreach ($id in @($selectedMods.Keys))
+				{
+					if (-not ($libraryMods | Where-Object { $_.workshopId -eq $id }))
+						{
+							$danglingMods += $id
+						}
+				}
+
+			$danglingServerMods = @()
+			foreach ($id in @($selectedServerMods.Keys))
+				{
+					if (-not ($libraryServerMods | Where-Object { $_.workshopId -eq $id }))
+						{
+							$danglingServerMods += $id
+						}
+				}
+
+			$danglingRowIds = @()
+			$danglingRowKinds = @()
+			if (($danglingMods.Count + $danglingServerMods.Count) -gt 0)
+				{
+					Write-Host ""
+					Write-Host "DANGLING (not in library) - use 'd<n>' to remove"
+					foreach ($id in $danglingMods)
+						{
+							$rowIndex++
+							$danglingRowIds += $id
+							$danglingRowKinds += 'mods'
+							Write-Host ("       {0,3}. (mods)       {1}" -f $rowIndex, $id)
+						}
+					foreach ($id in $danglingServerMods)
+						{
+							$rowIndex++
+							$danglingRowIds += $id
+							$danglingRowKinds += 'serverMods'
+							Write-Host ("       {0,3}. (serverMods) {1}" -f $rowIndex, $id)
+						}
+				}
+
+			$firstDangling = $rowKinds.Count + 1
+
+			Write-Host ""
+			Write-Host "Commands:"
+			Write-Host "  <numbers>   toggle (e.g. '1' or '1,3,5' or '1-4')"
+			Write-Host "  a           check all      n   uncheck all"
+			Write-Host "  s           save and exit  c   cancel (discard changes)"
+			Write-Host ""
+
+			$cmd = Read-Host -Prompt 'Command'
+			if ($null -eq $cmd) { $cmd = '' }
+			$cmd = $cmd.Trim()
+
+			if ($cmd -eq 's')
+				{
+					$savedMods = @(@($libraryMods | Where-Object { $selectedMods.ContainsKey($_.workshopId) } | ForEach-Object { $_.workshopId }) + @($danglingMods))
+					$savedServerMods = @(@($libraryServerMods | Where-Object { $selectedServerMods.ContainsKey($_.workshopId) } | ForEach-Object { $_.workshopId }) + @($danglingServerMods))
+					return [pscustomobject]@{
+						Saved      = $true
+						Mods       = $savedMods
+						ServerMods = $savedServerMods
+					}
+				}
+			elseif ($cmd -eq 'c')
+				{
+					return [pscustomobject]@{ Saved = $false }
+				}
+			elseif ($cmd -eq 'a')
+				{
+					foreach ($m in $libraryMods) { $selectedMods[$m.workshopId] = $true }
+					foreach ($m in $libraryServerMods) { $selectedServerMods[$m.workshopId] = $true }
+				}
+			elseif ($cmd -eq 'n')
+				{
+					$selectedMods = @{}
+					$selectedServerMods = @{}
+				}
+			elseif ($cmd -match '^d\s*(\d+)$')
+				{
+					$dIndex = [int] $Matches[1]
+					$offset = $dIndex - $firstDangling
+					if ($offset -ge 0 -and $offset -lt $danglingRowIds.Count)
+						{
+							$id = $danglingRowIds[$offset]
+							$kind = $danglingRowKinds[$offset]
+							if ($kind -eq 'mods')
+								{
+									$selectedMods.Remove($id) | Out-Null
+								}
+							else
+								{
+									$selectedServerMods.Remove($id) | Out-Null
+								}
+						}
+				}
+			else
+				{
+					$selections = ConvertFrom-ChecklistInput $cmd $rowKinds.Count
+					foreach ($n in $selections)
+						{
+							$kind = $rowKinds[$n - 1]
+							$id = $rowIds[$n - 1]
+							if ($kind -eq 'mods')
+								{
+									if ($selectedMods.ContainsKey($id)) { $selectedMods.Remove($id) | Out-Null }
+									else { $selectedMods[$id] = $true }
+								}
+							else
+								{
+									if ($selectedServerMods.ContainsKey($id)) { $selectedServerMods.Remove($id) | Out-Null }
+									else { $selectedServerMods[$id] = $true }
+								}
+						}
+				}
+		}
+}
+
 function Set-GeneratedLaunchMods {
 	param(
 		[string[]] $Mods,
@@ -1991,14 +2588,14 @@ function Remove-ConfiguredModFromPrompt {
 		{
 			if ($item -and $item.workshopId)
 				{
-					$allMods += [pscustomobject]@{ name = $item.name; workshopId = $item.workshopId; kind = 'Client' }
+					$allMods += [pscustomobject]@{ name = $item.name; workshopId = $item.workshopId; kind = 'Client'; configKind = 'mods' }
 				}
 		}
 	foreach ($item in @($config.serverMods))
 		{
 			if ($item -and $item.workshopId)
 				{
-					$allMods += [pscustomobject]@{ name = $item.name; workshopId = $item.workshopId; kind = 'Server' }
+					$allMods += [pscustomobject]@{ name = $item.name; workshopId = $item.workshopId; kind = 'Server'; configKind = 'serverMods' }
 				}
 		}
 
@@ -2038,20 +2635,32 @@ function Remove-ConfiguredModFromPrompt {
 
 	$selected = $allMods[$index - 1]
 	$workshopId = $selected.workshopId
+	$configKind = $selected.configKind
+
+	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
+	$referencing = Get-GroupsReferencingMod $groups $workshopId $configKind
+	if (@($referencing).Count -gt 0)
+		{
+			$displayName = if ([string]::IsNullOrWhiteSpace($selected.name)) { $workshopId } else { "$($selected.name) ($workshopId)" }
+			Write-Host ""
+			Write-Host "Mod '$displayName' is used in $(@($referencing).Count) group(s):"
+			foreach ($g in $referencing)
+				{
+					Write-Host "  - $($g.name)"
+				}
+			Write-Host ""
+			$confirm = Read-Host -Prompt 'Remove it from these groups and delete? (y/n)'
+			if ($confirm -ne 'y' -and $confirm -ne 'Y')
+				{
+					Write-Host "Cancelled."
+					Write-Host ""
+					return
+				}
+
+			Remove-ModFromAllGroups $config $workshopId $configKind
+		}
 
 	Remove-WorkshopModFromConfig $config $workshopId
-
-	# Auto-remove from launch parameters if present
-	$launchParams = Get-ConfiguredLaunchParameters $config
-	if ($launchParams)
-		{
-			$updatedParams = Remove-ModFromLaunchParameters $launchParams $workshopId
-			if ($updatedParams -ne $launchParams)
-				{
-					$config.launchParameters = $updatedParams
-					Write-Host "Also removed from saved launch parameters."
-				}
-		}
 
 	Save-RootConfig $config
 	Update-GeneratedLaunchFromRootConfig $config
@@ -2097,80 +2706,6 @@ function Move-ConfiguredModFromPrompt {
 	echo "`n"
 }
 
-function Edit-LaunchParamModsFromPrompt {
-	param([string] $Kind)
-
-	$config = Get-RootConfig
-	$launchParams = Get-ConfiguredLaunchParameters $config
-
-	if ([string]::IsNullOrWhiteSpace($launchParams))
-		{
-			Write-Host "No saved launch parameters are configured."
-			Write-Host ""
-			return
-		}
-
-	$kindLabel = if ($Kind -eq 'serverMods') { 'Server' } else { 'Client' }
-	$items = @($config.$Kind)
-	$currentIds = Get-ModIdsFromLaunchParameters $launchParams $Kind
-
-	if ($items.Count -eq 0)
-		{
-			Write-Host "No $($kindLabel.ToLower()) mods are configured."
-			Write-Host ""
-			return
-		}
-
-	Write-Host ""
-	Write-Host " Available $kindLabel mods:"
-	Write-Host " $([string]::new([char]0x2500, 37))"
-	for ($i = 0; $i -lt $items.Count; $i++)
-		{
-			$mod = $items[$i]
-			$name = if ([string]::IsNullOrWhiteSpace($mod.name)) { '(unnamed)' } else { $mod.name }
-			$paddedName = $name.PadRight(22)
-			$marker = if ($currentIds -contains $mod.workshopId) { '*' } else { ' ' }
-			Write-Host "  $($i + 1)) $marker $paddedName ($($mod.workshopId))"
-		}
-	Write-Host ""
-	Write-Host " * = currently in launch parameters"
-	Write-Host ""
-
-	$rawInput = Read-Host -Prompt 'Enter mod numbers to load (e.g. 1,3,4 or 1 2 3) or 0 to cancel'
-
-	if ($rawInput -eq '0')
-		{
-			return $false
-		}
-
-	# Parse selection: support comma-separated, space-separated, or mixed
-	$tokens = @($rawInput -split '[,\s]+' | Where-Object { $_ -match '^\d+$' })
-	$selectedIds = @()
-
-	foreach ($token in $tokens)
-		{
-			$num = [int]$token
-			if ($num -ge 1 -and $num -le $items.Count)
-				{
-					$id = $items[$num - 1].workshopId
-					if ($selectedIds -notcontains $id)
-						{
-							$selectedIds += $id
-						}
-				} else {
-					Write-Host "Skipped invalid number: $token"
-				}
-		}
-
-	$updatedParams = Set-ModsInLaunchParameters $launchParams $Kind $selectedIds
-	$config.launchParameters = $updatedParams
-	Save-RootConfig $config
-
-	Write-Host ""
-	Write-Host "Launch parameters updated with $($selectedIds.Count) $($kindLabel.ToLower()) mod(s)."
-	Write-Host ""
-}
-
 function ModManager_menu {
 	while ($true)
 		{
@@ -2183,9 +2718,7 @@ function ModManager_menu {
 			echo " 4) Add server mod"
 			echo " 5) Move mod between client and server lists"
 			echo " 6) Remove mod from configuration"
-			echo " 7) Edit client mods in launch parameters"
-			echo " 8) Edit server mods in launch parameters"
-			echo " 9) Back to Main Menu"
+			echo " 7) Back to Main Menu"
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo ""
 
@@ -2222,27 +2755,293 @@ function ModManager_menu {
 						continue
 					}
 					7 {
-						$result = Edit-LaunchParamModsFromPrompt 'mods'
-						if ($result -ne $false) { Pause-BeforeMenu }
-						continue
-					}
-					8 {
-						$result = Edit-LaunchParamModsFromPrompt 'serverMods'
-						if ($result -ne $false) { Pause-BeforeMenu }
-						continue
-					}
-					9 {
 						return
 					}
 					Default {
 						echo "`n"
-						echo "Select a number from the list (1-9)."
+						echo "Select a number from the list (1-7)."
 						echo "`n"
 						Pause-BeforeMenu
 						continue
 					}
 				}
 		}
+}
+
+function ModGroupManager_menu {
+	while ($true)
+		{
+			Show-MenuHeader 'Manage Mod Groups'
+
+			Write-Host " $([string]::new([char]0x2500, 37))"
+			echo " 1) Create group"
+			echo " 2) Edit group"
+			echo " 3) Rename group"
+			echo " 4) Clone group"
+			echo " 5) Delete group"
+			echo " 6) View group"
+			echo " 7) Back to Main Menu"
+			Write-Host " $([string]::new([char]0x2500, 37))"
+			echo ""
+
+			$select = Read-Host -Prompt 'Select an option'
+
+			switch ($select)
+				{
+					1 { New-ModGroupFromPrompt; Pause-BeforeMenu; continue }
+					2 { Edit-ModGroupFromPrompt; Pause-BeforeMenu; continue }
+					3 { Rename-ModGroupFromPrompt; Pause-BeforeMenu; continue }
+					4 { Copy-ModGroupFromPrompt; Pause-BeforeMenu; continue }
+					5 { Remove-ModGroupFromPrompt; Pause-BeforeMenu; continue }
+					6 { Show-ModGroupDetail; Pause-BeforeMenu; continue }
+					7 { return }
+					Default {
+						echo "`n"
+						echo "Select a number from the list (1-7)."
+						echo "`n"
+						Pause-BeforeMenu
+						continue
+					}
+				}
+		}
+}
+
+function Select-ModGroupFromList {
+	param(
+		$Groups,
+		[string] $Prompt
+	)
+
+	if (@($Groups).Count -eq 0)
+		{
+			Write-Host "No mod groups are defined."
+			Write-Host ""
+			return $null
+		}
+
+	Write-Host ""
+	Write-Host " Groups:"
+	Write-Host " $([string]::new([char]0x2500, 37))"
+	for ($i = 0; $i -lt $Groups.Count; $i++)
+		{
+			$g = $Groups[$i]
+			$modCount = @($g.mods).Count
+			$smCount = @($g.serverMods).Count
+			Write-Host "  $($i + 1)) $($g.name) ($modCount mods, $smCount serverMods)"
+		}
+	Write-Host ""
+
+	$raw = Read-Host -Prompt "$Prompt (0 to cancel)"
+	if ($raw -eq '0') { return $null }
+
+	$index = 0
+	if (-not [int]::TryParse($raw, [ref]$index) -or $index -lt 1 -or $index -gt $Groups.Count)
+		{
+			Write-Host "Invalid selection."
+			Write-Host ""
+			return $null
+		}
+
+	return $Groups[$index - 1]
+}
+
+function New-ModGroupFromPrompt {
+	$config = Get-RootConfig
+	if (!$config) { return }
+
+	$name = Read-Host -Prompt 'Enter a name for the new group'
+	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
+	if (-not (Test-ModGroupNameValid $name $groups))
+		{
+			Write-Host "Invalid or duplicate group name."
+			Write-Host ""
+			return
+		}
+
+	$group = New-DefaultModGroup ($name.Trim())
+	$result = Invoke-ModGroupChecklistEditor $config $group
+	if (-not $result.Saved)
+		{
+			Write-Host "Cancelled - group not created."
+			Write-Host ""
+			return
+		}
+
+	$group.mods = @($result.Mods)
+	$group.serverMods = @($result.ServerMods)
+
+	$updatedGroups = @($groups) + $group
+	if ($config.PSObject.Properties.Name -contains 'modGroups')
+		{
+			$config.modGroups = $updatedGroups
+		}
+	else
+		{
+			$config | Add-Member -NotePropertyName modGroups -NotePropertyValue $updatedGroups -Force
+		}
+
+	Save-RootConfig $config
+	Write-Host "Created group '$($group.name)'."
+	Write-Host ""
+}
+
+function Edit-ModGroupFromPrompt {
+	$config = Get-RootConfig
+	if (!$config) { return }
+
+	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
+	$group = Select-ModGroupFromList $groups 'Select a group to edit'
+	if (!$group) { return }
+
+	$result = Invoke-ModGroupChecklistEditor $config $group
+	if (-not $result.Saved)
+		{
+			Write-Host "Cancelled - no changes saved."
+			Write-Host ""
+			return
+		}
+
+	$group.mods = @($result.Mods)
+	$group.serverMods = @($result.ServerMods)
+
+	if ($config.activeGroup -eq $group.name)
+		{
+			Sync-LaunchParametersFromActiveGroup $config
+		}
+
+	Save-RootConfig $config
+	Write-Host "Updated group '$($group.name)'."
+	Write-Host ""
+}
+
+function Rename-ModGroupFromPrompt {
+	$config = Get-RootConfig
+	if (!$config) { return }
+	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
+	$group = Select-ModGroupFromList $groups 'Select a group to rename'
+	if (!$group) { return }
+
+	$new = Read-Host -Prompt "New name for '$($group.name)'"
+	if (Rename-ModGroup $config $group.name $new)
+		{
+			Save-RootConfig $config
+			Write-Host "Renamed to '$($new.Trim())'."
+		}
+	else
+		{
+			Write-Host "Invalid or duplicate name."
+		}
+	Write-Host ""
+}
+
+function Copy-ModGroupFromPrompt {
+	$config = Get-RootConfig
+	if (!$config) { return }
+	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
+	$source = Select-ModGroupFromList $groups 'Select a group to clone'
+	if (!$source) { return }
+
+	$name = Read-Host -Prompt "Name for the clone of '$($source.name)'"
+	if (-not (Test-ModGroupNameValid $name $groups))
+		{
+			Write-Host "Invalid or duplicate group name."
+			Write-Host ""
+			return
+		}
+
+	$clone = New-DefaultModGroup -Name ($name.Trim()) -Mods @($source.mods) -ServerMods @($source.serverMods)
+	$result = Invoke-ModGroupChecklistEditor $config $clone
+	if (-not $result.Saved)
+		{
+			Write-Host "Cancelled - clone not created."
+			Write-Host ""
+			return
+		}
+
+	$clone.mods = @($result.Mods)
+	$clone.serverMods = @($result.ServerMods)
+
+	$config.modGroups = @($groups) + $clone
+	Save-RootConfig $config
+	Write-Host "Created clone '$($clone.name)'."
+	Write-Host ""
+}
+
+function Remove-ModGroupFromPrompt {
+	$config = Get-RootConfig
+	if (!$config) { return }
+	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
+	$group = Select-ModGroupFromList $groups 'Select a group to delete'
+	if (!$group) { return }
+
+	if ($config.activeGroup -eq $group.name)
+		{
+			Write-Host "Cannot delete the active group. Switch to another group first."
+			Write-Host ""
+			return
+		}
+	if (@($groups).Count -le 1)
+		{
+			Write-Host "Cannot delete the last remaining group."
+			Write-Host ""
+			return
+		}
+
+	$confirm = Read-Host -Prompt "Delete group '$($group.name)'? (y/n)"
+	if ($confirm -ne 'y' -and $confirm -ne 'Y')
+		{
+			Write-Host "Cancelled."
+			Write-Host ""
+			return
+		}
+
+	if (Remove-ModGroup $config $group.name)
+		{
+			Save-RootConfig $config
+			Write-Host "Deleted '$($group.name)'."
+		}
+	else
+		{
+			Write-Host "Could not delete group."
+		}
+	Write-Host ""
+}
+
+function Show-ModGroupDetail {
+	$config = Get-RootConfig
+	if (!$config) { return }
+
+	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
+	$group = Select-ModGroupFromList $groups 'Select a group to view'
+	if (!$group) { return }
+
+	$resolved = Resolve-ModGroupAgainstLibrary $config $group
+
+	Write-Host ""
+	Write-Host " Group: $($group.name)"
+	Write-Host " $([string]::new([char]0x2500, 37))"
+	Write-Host " MODS ($(@($group.mods).Count))"
+	foreach ($m in $resolved.ResolvedMods)
+		{
+			$n = if ([string]::IsNullOrWhiteSpace($m.name)) { '(unnamed)' } else { $m.name }
+			Write-Host "   $n ($($m.workshopId))"
+		}
+	foreach ($id in $resolved.DanglingMods)
+		{
+			Write-Host "   [dangling] $id"
+		}
+	Write-Host ""
+	Write-Host " SERVER MODS ($(@($group.serverMods).Count))"
+	foreach ($m in $resolved.ResolvedServerMods)
+		{
+			$n = if ([string]::IsNullOrWhiteSpace($m.name)) { '(unnamed)' } else { $m.name }
+			Write-Host "   $n ($($m.workshopId))"
+		}
+	foreach ($id in $resolved.DanglingServerMods)
+		{
+			Write-Host "   [dangling] $id"
+		}
+	Write-Host ""
 }
 
 
@@ -2323,9 +3122,11 @@ function Menu {
 			echo " 3) Start server"
 			echo " 4) Stop server"
 			echo " 5) Remove / Uninstall"
-			echo " 6) Manage mods"
-			echo " 7) Configure SteamCMD account"
-			echo " 8) Exit"
+			echo " 6) Switch active mod group"
+			echo " 7) Manage mods"
+			echo " 8) Manage mod groups"
+			echo " 9) Configure SteamCMD account"
+			echo " 10) Exit"
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo ""
 
@@ -2392,27 +3193,40 @@ function Menu {
 						continue
 					}
 
-					#Manage mods
+					#Switch active mod group
 					6 {
+						Select-ActiveModGroupFromPrompt
+						Pause-BeforeMenu
+						continue
+					}
+
+					#Manage mods
+					7 {
 						ModManager_menu
 						continue
 					}
 
+					#Manage mod groups
+					8 {
+						ModGroupManager_menu
+						continue
+					}
+
 					#Configure SteamCMD account
-					7 {
+					9 {
 						DownloadLogin_menu
 						continue
 					}
 
 					#Close script
-					8 {
+					10 {
 						exit 0
 					}
 
 					#Force user to select one of provided options
 					Default {
 						echo "`n"
-						echo "Select a number from the list (1-8)."
+						echo "Select a number from the list (1-10)."
 						echo "`n"
 
 						Pause-BeforeMenu
