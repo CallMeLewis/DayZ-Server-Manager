@@ -27,6 +27,7 @@ Mod groups let you save multiple named mod profiles and swap them in seconds.
 - Create, edit, rename, clone, delete, or view groups from `Manage mod groups`
 - Switch the active group from the main menu to instantly rewrite `-mod` and `-serverMod`
 - The first run migrates your current launch parameters into a `Default` group
+- Store a map (mission folder) per group; switching groups updates `template` in `serverDZ.cfg`
 
 ## Requirements
 
