@@ -665,7 +665,7 @@ function Invoke-ModGroupsMigration {
 		}
 
 	$mission = $null
-	$serverFolder = $Config.serverFolder
+	$serverFolder = Resolve-ServerFolderForMissions $Config
 	if (-not [string]::IsNullOrWhiteSpace($serverFolder))
 		{
 			$serverConfigPath = Join-Path $serverFolder 'serverDZ.cfg'
@@ -1459,6 +1459,22 @@ function Set-MissionFolderInServerConfigText {
 	return [regex]::Replace($Text, $pattern, "template=`"$Mission`"", 'IgnoreCase')
 }
 
+function Resolve-ServerFolderForMissions {
+	param($Config)
+
+	if ($Config -is [hashtable] -and $Config.ContainsKey('serverFolder') -and -not [string]::IsNullOrWhiteSpace($Config.serverFolder))
+		{
+			return $Config.serverFolder
+		}
+
+	if ($Config -and ($Config.PSObject.Properties.Name -contains 'serverFolder') -and -not [string]::IsNullOrWhiteSpace($Config.serverFolder))
+		{
+			return $Config.serverFolder
+		}
+
+	return Get-CurrentServerDirectory
+}
+
 function Get-MissionFolderOptions {
 	param([string] $ServerFolder)
 	if ([string]::IsNullOrWhiteSpace($ServerFolder)) { return @() }
@@ -1799,8 +1815,9 @@ function Sync-ServerConfigMission {
 	param($Config, [string] $Mission)
 
 	if (!$Config -or [string]::IsNullOrWhiteSpace($Mission)) { return $false }
-	if (-not ($Config.PSObject.Properties.Name -contains 'serverFolder')) { return $false }
-	$cfgPath = Join-Path $Config.serverFolder 'serverDZ.cfg'
+	$serverFolder = Resolve-ServerFolderForMissions $Config
+	if ([string]::IsNullOrWhiteSpace($serverFolder)) { return $false }
+	$cfgPath = Join-Path $serverFolder 'serverDZ.cfg'
 	if (-not (Test-Path -LiteralPath $cfgPath)) { return $false }
 	$text = Get-Content -LiteralPath $cfgPath -Raw
 	$updated = Set-MissionFolderInServerConfigText $text $Mission
@@ -2976,7 +2993,7 @@ function New-ModGroupFromPrompt {
 
 	$group.mods = @($result.Mods)
 	$group.serverMods = @($result.ServerMods)
-	$mission = Select-MissionFromList $config.serverFolder 'Select mission'
+	$mission = Select-MissionFromList (Resolve-ServerFolderForMissions $config) 'Select mission'
 	if ($mission)
 		{
 			if ($group.PSObject.Properties.Name -contains 'mission')
@@ -3022,7 +3039,7 @@ function Edit-ModGroupFromPrompt {
 
 	$group.mods = @($result.Mods)
 	$group.serverMods = @($result.ServerMods)
-	$mission = Select-MissionFromList $config.serverFolder 'Select mission'
+	$mission = Select-MissionFromList (Resolve-ServerFolderForMissions $config) 'Select mission'
 	if ($mission)
 		{
 			if ($group.PSObject.Properties.Name -contains 'mission')
