@@ -20,6 +20,14 @@ I am not claiming authorship of the original server manager script. This project
 - Manage client and server mod lists from the interactive menu
 - Manage mod groups: named mod profiles you can switch in one step
 
+## Linux Manager
+
+The Linux rewrite uses `server_manager_linux.sh` as the interactive entrypoint.
+
+It targets Ubuntu 24.04 x86_64.
+
+It is systemd-first: the menu routes start, stop, restart, status, and reload actions through `systemctl`, and the DayZ server runs as a background service instead of a foreground shell process.
+
 ## New: Mod Groups
 
 Mod groups let you save multiple named mod profiles and swap them in seconds.
@@ -39,6 +47,9 @@ Mod groups let you save multiple named mod profiles and swap them in seconds.
 ## Main Files
 
 - `Server_manager.ps1`: main script
+- `server_manager_linux.sh`: Linux interactive entrypoint
+- `lib/linux_manager.sh`: Linux helper library
+- `templates/dayz-server.service.template`: systemd unit template
 - `Start_Server_Manager.cmd`: double-click launcher for File Explorer use
 - `server-manager.config.json`: root config stored next to the script
 - `STEAMCMD-CREDENTIALS.md`: explains how SteamCMD credentials are stored and passed to SteamCMD
