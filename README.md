@@ -28,6 +28,8 @@ It is tested on Ubuntu 24.04 x86_64 and is expected to work on similar Debian-ba
 
 It is systemd-first: the menu routes start, stop, restart, status, and reload actions through `systemctl`, and the DayZ server runs as a background service instead of a foreground shell process.
 
+Linux mod management now stores mod metadata locally. When you add a mod from the Linux menu, you provide a required title once, and the manager keeps that title plus the Workshop URL without making extra Workshop page requests.
+
 ## New: Mod Groups
 
 Mod groups let you save multiple named mod profiles and swap them in seconds.
@@ -158,9 +160,11 @@ Use the `Manage mods` menu to:
 
 - List client mods
 - List server mods
-- Add mods
+- Add mods with a required title
 - Move mods between client and server lists
 - Remove mods from config
+
+On Linux, titled mod entries render as `Title (WorkshopId)` and also show the stored Workshop URL when one is available. Legacy Linux configs that still contain raw Workshop IDs continue to work and render as unnamed entries until they are re-added with titles.
 
 ## Double-Click Launch
 
