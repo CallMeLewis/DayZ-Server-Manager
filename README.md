@@ -24,7 +24,7 @@ I am not claiming authorship of the original server manager script. This project
 
 The Linux rewrite uses `linux/server_manager_linux.sh` as the interactive entrypoint.
 
-It targets Ubuntu 24.04 x86_64.
+It is tested on Ubuntu 24.04 x86_64 and is expected to work on similar Debian-based x86_64 systems.
 
 It is systemd-first: the menu routes start, stop, restart, status, and reload actions through `systemctl`, and the DayZ server runs as a background service instead of a foreground shell process.
 
@@ -35,7 +35,7 @@ Mod groups let you save multiple named mod profiles and swap them in seconds.
 - Create, edit, rename, clone, delete, or view groups from `Manage mod groups`
 - Switch the active group from the main menu to instantly rewrite `-mod` and `-serverMod`
 - The first run migrates your current launch parameters into a `Default` group
-- Store a map (mission folder) per group; switching groups updates `template` in `serverDZ.cfg`
+- Store a map (mission folder) per group; switching groups updates `template` in `serverDZ.cfg` (Windows version only for now)
 
 ## Requirements
 
