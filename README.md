@@ -4,13 +4,13 @@ PowerShell script for downloading, updating, and managing a DayZ dedicated serve
 
 ## Attribution
 
-This repository is an updated version of the original `Server_manager.ps1` provided by Bohemia Interactive.
+This repository is an updated version of the original `windows/Server_manager.ps1` provided by Bohemia Interactive.
 
 I am not claiming authorship of the original server manager script. This project is a maintained and modified version of Bohemia Interactive's original work.
 
 ## Overview
 
-`Server_manager.ps1` can:
+`windows/Server_manager.ps1` can:
 
 - Download or update SteamCMD
 - Download or update DayZ server files
@@ -22,7 +22,7 @@ I am not claiming authorship of the original server manager script. This project
 
 ## Linux Manager
 
-The Linux rewrite uses `server_manager_linux.sh` as the interactive entrypoint.
+The Linux rewrite uses `linux/server_manager_linux.sh` as the interactive entrypoint.
 
 It targets Ubuntu 24.04 x86_64.
 
@@ -46,23 +46,23 @@ Mod groups let you save multiple named mod profiles and swap them in seconds.
 
 ## Main Files
 
-- `Server_manager.ps1`: main script
-- `server_manager_linux.sh`: Linux interactive entrypoint
-- `lib/linux_manager.sh`: Linux helper library
-- `templates/dayz-server.service.template`: systemd unit template
-- `Start_Server_Manager.cmd`: double-click launcher for File Explorer use
-- `server-manager.config.json`: root config stored next to the script
+- `windows/Server_manager.ps1`: Windows main script
+- `windows/server-manager.config.json`: local Windows config stored next to the script and kept out of git
+- `windows/Start_Server_Manager.cmd`: Windows double-click launcher for File Explorer use
+- `linux/server_manager_linux.sh`: Linux interactive entrypoint
+- `linux/lib/linux_manager.sh`: Linux helper library
+- `linux/templates/dayz-server.service.template`: systemd unit template
 - `STEAMCMD-CREDENTIALS.md`: explains how SteamCMD credentials are stored and passed to SteamCMD
 
 ## Configuration
 
 The manager uses two JSON files.
 
-### Root Config
+### Windows Config
 
-Stored in the repository folder:
+Stored locally next to the Windows script:
 
-`server-manager.config.json`
+`windows/server-manager.config.json`
 
 This file contains the persistent manager configuration:
 
@@ -98,7 +98,7 @@ If Steam Guard is enabled, SteamCMD may require either Steam app confirmation or
 ### Interactive Menu
 
 ```powershell
-.\Server_manager.ps1
+.\windows\Server_manager.ps1
 ```
 
 On first run, the script only sets up SteamCMD. It does not ask for Steam credentials during startup.
@@ -125,31 +125,31 @@ If SteamCMD sign-in fails, the manager shows guided retry options and marks the 
 Open the main menu:
 
 ```powershell
-.\Server_manager.ps1
+.\windows\Server_manager.ps1
 ```
 
 Update the experimental server:
 
 ```powershell
-.\Server_manager.ps1 -update server -app exp
+.\windows\Server_manager.ps1 -update server -app exp
 ```
 
-Update both server and mods and start with the configured `launchParameters` value from `server-manager.config.json`:
+Update both server and mods and start with the configured `launchParameters` value from `windows/server-manager.config.json`:
 
 ```powershell
-.\Server_manager.ps1 -u all -s start -lp user
+.\windows\Server_manager.ps1 -u all -s start -lp user
 ```
 
 Stop tracked DayZ server processes started by this script:
 
 ```powershell
-.\Server_manager.ps1 -s stop
+.\windows\Server_manager.ps1 -s stop
 ```
 
 Show help for a specific parameter:
 
 ```powershell
-Get-Help .\Server_manager.ps1 -Parameter update
+Get-Help .\windows\Server_manager.ps1 -Parameter update
 ```
 
 ## Mod Management
@@ -164,7 +164,7 @@ Use the `Manage mods` menu to:
 
 ## Double-Click Launch
 
-Use `Start_Server_Manager.cmd` to run the manager from File Explorer without opening a terminal first. The launcher keeps the window open after the script exits so the output remains visible.
+Use `windows/Start_Server_Manager.cmd` to run the Windows manager from File Explorer without opening a terminal first. The launcher keeps the window open after the script exits so the output remains visible.
 
 The launcher now respects your local PowerShell execution policy. If you edit the local copy, you may need to unblock or re-sign it depending on your policy settings.
 
