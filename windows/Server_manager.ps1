@@ -1016,6 +1016,92 @@ function New-DefaultStateConfig {
 	}
 }
 
+function Test-UpdateCheckCacheFresh {
+	param(
+		$UpdateCheck,
+		[datetime] $Now
+	)
+
+	if (-not $UpdateCheck)
+		{
+			return $false
+		}
+
+	$checkedAt = [string] $UpdateCheck.checkedAt
+	if ([string]::IsNullOrWhiteSpace($checkedAt))
+		{
+			return $false
+		}
+
+	$parsed = [datetime]::new(0)
+	if (-not [datetime]::TryParse($checkedAt, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal, [ref] $parsed))
+		{
+			return $false
+		}
+
+	$age = ($Now.ToUniversalTime() - $parsed)
+	return ($age.TotalHours -lt 6)
+}
+
+function Compare-UpdateCheckVersion {
+	param(
+		[string] $Left,
+		[string] $Right
+	)
+
+	$pattern = '^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$'
+	$leftMatch = [regex]::Match($Left, $pattern)
+	$rightMatch = [regex]::Match($Right, $pattern)
+	if (-not $leftMatch.Success -or -not $rightMatch.Success)
+		{
+			return $null
+		}
+
+	for ($i = 1; $i -le 3; $i++)
+		{
+			$leftPart = [int] $leftMatch.Groups[$i].Value
+			$rightPart = [int] $rightMatch.Groups[$i].Value
+			if ($leftPart -lt $rightPart) { return -1 }
+			if ($leftPart -gt $rightPart) { return 1 }
+		}
+
+	return 0
+}
+
+function Test-UpdateCheckShouldNotify {
+	param($UpdateCheck, [string] $CurrentVersion)
+
+	if (-not $UpdateCheck) { return $false }
+	$latest = [string] $UpdateCheck.latestVersion
+	if ([string]::IsNullOrWhiteSpace($latest)) { return $false }
+
+	$cmp = Compare-UpdateCheckVersion $CurrentVersion $latest
+	if ($null -eq $cmp) { return $false }
+	if ($cmp -ge 0) { return $false }
+
+	return ([string] $UpdateCheck.lastAcknowledgedVersion -ne $latest)
+}
+
+function Test-UpdateCheckShouldShowIndicator {
+	param($UpdateCheck, [string] $CurrentVersion)
+
+	if (-not $UpdateCheck) { return $false }
+	$latest = [string] $UpdateCheck.latestVersion
+	if ([string]::IsNullOrWhiteSpace($latest)) { return $false }
+
+	$cmp = Compare-UpdateCheckVersion $CurrentVersion $latest
+	if ($null -eq $cmp) { return $false }
+	return ($cmp -lt 0)
+}
+
+function Set-UpdateCheckAcknowledged {
+	param($State, [string] $Version)
+
+	if (-not $State) { return }
+	if (-not $State.updateCheck) { return }
+	$State.updateCheck.lastAcknowledgedVersion = $Version
+}
+
 function Invoke-HybridPythonCoreWithInput {
 	param(
 		[string[]] $Arguments,

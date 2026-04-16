@@ -36,3 +36,66 @@ Describe 'Get-StateConfig backfill' {
         $state.updateCheck.lastAcknowledgedVersion | Should Be ''
     }
 }
+
+Describe 'Test-UpdateCheckCacheFresh' {
+    It 'returns false when checkedAt is empty' {
+        $updateCheck = [pscustomobject]@{ latestVersion = ''; latestTag = ''; releaseUrl = ''; checkedAt = ''; lastAcknowledgedVersion = '' }
+        Test-UpdateCheckCacheFresh $updateCheck (Get-Date) | Should Be $false
+    }
+
+    It 'returns true when checkedAt is within six hours of now' {
+        $now = Get-Date '2026-04-16T12:00:00Z'
+        $updateCheck = [pscustomobject]@{ latestVersion = '1.2.0'; latestTag = 'v1.2.0'; releaseUrl = ''; checkedAt = '2026-04-16T09:30:00Z'; lastAcknowledgedVersion = '' }
+        Test-UpdateCheckCacheFresh $updateCheck $now | Should Be $true
+    }
+
+    It 'returns false when checkedAt is older than six hours' {
+        $now = Get-Date '2026-04-16T12:00:00Z'
+        $updateCheck = [pscustomobject]@{ latestVersion = '1.2.0'; latestTag = 'v1.2.0'; releaseUrl = ''; checkedAt = '2026-04-16T05:30:00Z'; lastAcknowledgedVersion = '' }
+        Test-UpdateCheckCacheFresh $updateCheck $now | Should Be $false
+    }
+}
+
+Describe 'Test-UpdateCheckShouldNotify' {
+    It 'returns true when cached latest is newer than current and never acknowledged' {
+        $updateCheck = [pscustomobject]@{ latestVersion = '1.2.0'; latestTag = 'v1.2.0'; releaseUrl = ''; checkedAt = '2026-04-16T12:00:00Z'; lastAcknowledgedVersion = '' }
+        Test-UpdateCheckShouldNotify $updateCheck '1.1.0' | Should Be $true
+    }
+
+    It 'returns false when user already acknowledged this version' {
+        $updateCheck = [pscustomobject]@{ latestVersion = '1.2.0'; latestTag = 'v1.2.0'; releaseUrl = ''; checkedAt = '2026-04-16T12:00:00Z'; lastAcknowledgedVersion = '1.2.0' }
+        Test-UpdateCheckShouldNotify $updateCheck '1.1.0' | Should Be $false
+    }
+
+    It 'returns false when current version is already at or above latest' {
+        $updateCheck = [pscustomobject]@{ latestVersion = '1.2.0'; latestTag = 'v1.2.0'; releaseUrl = ''; checkedAt = '2026-04-16T12:00:00Z'; lastAcknowledgedVersion = '' }
+        Test-UpdateCheckShouldNotify $updateCheck '1.2.0' | Should Be $false
+        Test-UpdateCheckShouldNotify $updateCheck '1.3.0' | Should Be $false
+    }
+
+    It 'returns false when latestVersion is empty' {
+        $updateCheck = [pscustomobject]@{ latestVersion = ''; latestTag = ''; releaseUrl = ''; checkedAt = ''; lastAcknowledgedVersion = '' }
+        Test-UpdateCheckShouldNotify $updateCheck '1.1.0' | Should Be $false
+    }
+}
+
+Describe 'Test-UpdateCheckShouldShowIndicator' {
+    It 'returns true when cached latest is newer than current regardless of ack' {
+        $updateCheck = [pscustomobject]@{ latestVersion = '1.2.0'; latestTag = 'v1.2.0'; releaseUrl = ''; checkedAt = '2026-04-16T12:00:00Z'; lastAcknowledgedVersion = '1.2.0' }
+        Test-UpdateCheckShouldShowIndicator $updateCheck '1.1.0' | Should Be $true
+    }
+
+    It 'returns false when current is equal or greater' {
+        $updateCheck = [pscustomobject]@{ latestVersion = '1.2.0'; latestTag = 'v1.2.0'; releaseUrl = ''; checkedAt = '2026-04-16T12:00:00Z'; lastAcknowledgedVersion = '' }
+        Test-UpdateCheckShouldShowIndicator $updateCheck '1.2.0' | Should Be $false
+    }
+}
+
+Describe 'Set-UpdateCheckAcknowledged' {
+    It 'writes lastAcknowledgedVersion equal to the supplied version' {
+        $state = New-DefaultStateConfig
+        $state.updateCheck.latestVersion = '1.2.0'
+        Set-UpdateCheckAcknowledged $state '1.2.0'
+        $state.updateCheck.lastAcknowledgedVersion | Should Be '1.2.0'
+    }
+}
