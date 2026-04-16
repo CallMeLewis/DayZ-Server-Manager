@@ -1006,6 +1006,13 @@ function New-DefaultStateConfig {
 			serverMod = ''
 		}
 		trackedServers = @()
+		updateCheck = [pscustomobject]@{
+			latestVersion = ''
+			latestTag = ''
+			releaseUrl = ''
+			checkedAt = ''
+			lastAcknowledgedVersion = ''
+		}
 	}
 }
 
@@ -1335,6 +1342,19 @@ function Get-StateConfig {
 	if (-not ($state.PSObject.Properties.Name -contains 'trackedServers'))
 		{
 			$state | Add-Member -NotePropertyName trackedServers -NotePropertyValue @() -Force
+			Save-StateConfig $state
+		}
+
+	# Ensure updateCheck property exists on loaded state.
+	if (-not ($state.PSObject.Properties.Name -contains 'updateCheck'))
+		{
+			$state | Add-Member -NotePropertyName updateCheck -NotePropertyValue ([pscustomobject]@{
+				latestVersion = ''
+				latestTag = ''
+				releaseUrl = ''
+				checkedAt = ''
+				lastAcknowledgedVersion = ''
+			}) -Force
 			Save-StateConfig $state
 		}
 
