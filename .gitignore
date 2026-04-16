@@ -2,5 +2,7 @@ docs/
 server-manager.config.json
 server-manager.state.json
 *.legacy.bak
+__pycache__/
+*.pyc
 .worktrees/
 .release/
