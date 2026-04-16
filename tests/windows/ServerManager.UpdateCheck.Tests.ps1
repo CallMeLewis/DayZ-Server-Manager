@@ -99,3 +99,66 @@ Describe 'Set-UpdateCheckAcknowledged' {
         $state.updateCheck.lastAcknowledgedVersion | Should Be '1.2.0'
     }
 }
+
+Describe 'Merge-UpdateCheckResult' {
+    It 'writes latestVersion, latestTag, releaseUrl, and checkedAt on success' {
+        $state = New-DefaultStateConfig
+        $now = Get-Date '2026-04-16T12:00:00Z'
+        $result = [pscustomobject]@{
+            currentVersion = '1.1.0'
+            latestVersion = '1.2.0'
+            latestTag = 'v1.2.0'
+            releaseUrl = 'https://example.invalid/v1.2.0'
+            updateAvailable = $true
+            error = $null
+        }
+        Merge-UpdateCheckResult $state $result $now
+
+        $state.updateCheck.latestVersion | Should Be '1.2.0'
+        $state.updateCheck.latestTag | Should Be 'v1.2.0'
+        $state.updateCheck.releaseUrl | Should Be 'https://example.invalid/v1.2.0'
+        $state.updateCheck.checkedAt | Should Be '2026-04-16T12:00:00Z'
+    }
+
+    It 'only updates checkedAt when the result has an error' {
+        $state = New-DefaultStateConfig
+        $state.updateCheck.latestVersion = '1.2.0'
+        $state.updateCheck.latestTag = 'v1.2.0'
+        $state.updateCheck.releaseUrl = 'https://example.invalid/v1.2.0'
+        $state.updateCheck.checkedAt = '2026-04-15T12:00:00Z'
+
+        $now = Get-Date '2026-04-16T12:00:00Z'
+        $result = [pscustomobject]@{
+            currentVersion = '1.1.0'
+            latestVersion = $null
+            latestTag = $null
+            releaseUrl = $null
+            updateAvailable = $false
+            error = 'network error'
+        }
+        Merge-UpdateCheckResult $state $result $now
+
+        $state.updateCheck.latestVersion | Should Be '1.2.0'
+        $state.updateCheck.checkedAt | Should Be '2026-04-16T12:00:00Z'
+    }
+
+    It 'resets lastAcknowledgedVersion when the latest version changes' {
+        $state = New-DefaultStateConfig
+        $state.updateCheck.latestVersion = '1.2.0'
+        $state.updateCheck.lastAcknowledgedVersion = '1.2.0'
+
+        $now = Get-Date '2026-04-16T12:00:00Z'
+        $result = [pscustomobject]@{
+            currentVersion = '1.1.0'
+            latestVersion = '1.3.0'
+            latestTag = 'v1.3.0'
+            releaseUrl = 'https://example.invalid/v1.3.0'
+            updateAvailable = $true
+            error = $null
+        }
+        Merge-UpdateCheckResult $state $result $now
+
+        $state.updateCheck.latestVersion | Should Be '1.3.0'
+        $state.updateCheck.lastAcknowledgedVersion | Should Be ''
+    }
+}

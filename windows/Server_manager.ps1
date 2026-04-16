@@ -1102,6 +1102,56 @@ function Set-UpdateCheckAcknowledged {
 	$State.updateCheck.lastAcknowledgedVersion = $Version
 }
 
+function Format-UpdateCheckTimestamp {
+	param([datetime] $Value)
+	return $Value.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Merge-UpdateCheckResult {
+	param($State, $Result, [datetime] $Now)
+
+	if (-not $State -or -not $State.updateCheck) { return }
+	if (-not $Result) { return }
+
+	$State.updateCheck.checkedAt = Format-UpdateCheckTimestamp $Now
+
+	if ($Result.error)
+		{
+			return
+		}
+
+	$newLatest = [string] $Result.latestVersion
+	$previousLatest = [string] $State.updateCheck.latestVersion
+
+	$State.updateCheck.latestVersion = $newLatest
+	$State.updateCheck.latestTag = [string] $Result.latestTag
+	$State.updateCheck.releaseUrl = [string] $Result.releaseUrl
+
+	if ($newLatest -ne $previousLatest)
+		{
+			$State.updateCheck.lastAcknowledgedVersion = ''
+		}
+}
+
+function Invoke-UpdateCheckRefresh {
+	param([string] $CurrentVersion)
+
+	$raw = Invoke-HybridPythonCore @('check-update', '--current-version', $CurrentVersion)
+	if ([string]::IsNullOrWhiteSpace($raw))
+		{
+			return $null
+		}
+
+	try
+		{
+			return ($raw | ConvertFrom-Json)
+		}
+	catch
+		{
+			return $null
+		}
+}
+
 function Invoke-HybridPythonCoreWithInput {
 	param(
 		[string[]] $Arguments,
