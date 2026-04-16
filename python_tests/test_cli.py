@@ -1479,5 +1479,31 @@ class CliTests(unittest.TestCase):
         self.assertEqual(updated["modLibrary"]["groups"], [])
 
 
+class CheckUpdateCliTests(unittest.TestCase):
+    def test_check_update_subcommand_returns_json_payload(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+        script = "\n".join([
+            "import json, sys",
+            "from unittest.mock import patch",
+            "import dayz_manager.cli as cli",
+            "with patch('dayz_manager.update_check.fetch_latest_release', return_value={'tag': 'v9.9.9', 'url': 'https://example.invalid/v9.9.9'}):",
+            "    sys.argv = ['cli', 'check-update', '--current-version', '1.1.0']",
+            "    cli.main()",
+        ])
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["currentVersion"], "1.1.0")
+        self.assertEqual(payload["latestVersion"], "9.9.9")
+        self.assertTrue(payload["updateAvailable"])
+        self.assertIsNone(payload["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

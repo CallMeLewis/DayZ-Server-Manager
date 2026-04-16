@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from dayz_manager.adapters import load_config_from_json_text, load_config_from_path
+from dayz_manager.update_check import check_update
 from dayz_manager.details import group_detail_summary, workshop_usage_summary
 from dayz_manager.launch import (
     build_launch_string,
@@ -114,6 +115,10 @@ def _parse_args() -> argparse.Namespace:
     export_config_parser.add_argument("--config", required=True)
 
     subparsers.add_parser("import-config-json")
+
+    check_update_parser = subparsers.add_parser("check-update")
+    check_update_parser.add_argument("--current-version", required=True)
+    check_update_parser.add_argument("--timeout", type=float, default=3.0)
 
     return parser.parse_args()
 
@@ -265,6 +270,10 @@ def main() -> int:
         except (json.JSONDecodeError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
+
+    if args.command == "check-update":
+        print(json.dumps(check_update(current_version=args.current_version, timeout=args.timeout)))
+        return 0
 
     raise ValueError(f"unsupported command: {args.command}")
 
