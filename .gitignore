@@ -1,5 +1,4 @@
 docs/
-tests/
 server-manager.config.json
 server-manager.state.json
 *.legacy.bak
