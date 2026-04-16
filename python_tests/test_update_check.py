@@ -34,3 +34,42 @@ class CompareVersionsTests(unittest.TestCase):
 
     def test_accepts_v_prefix_on_either_side(self) -> None:
         self.assertEqual(compare_versions("v1.1.0", "1.1.0"), 0)
+
+
+import io
+import json
+from unittest.mock import patch
+from urllib.error import URLError
+
+from dayz_manager.update_check import fetch_latest_release, LATEST_RELEASE_URL
+
+
+def _fake_http_response(payload: dict) -> io.BytesIO:
+    return io.BytesIO(json.dumps(payload).encode("utf-8"))
+
+
+class FetchLatestReleaseTests(unittest.TestCase):
+    def test_returns_tag_and_url_on_success(self) -> None:
+        payload = {
+            "tag_name": "v1.2.0",
+            "html_url": "https://github.com/CallMeLewis/DayZ-Server-Manager/releases/tag/v1.2.0",
+        }
+        with patch("dayz_manager.update_check.urlopen", return_value=_fake_http_response(payload)) as mock_urlopen:
+            result = fetch_latest_release(timeout=3.0)
+
+        self.assertEqual(result, {
+            "tag": "v1.2.0",
+            "url": "https://github.com/CallMeLewis/DayZ-Server-Manager/releases/tag/v1.2.0",
+        })
+        request = mock_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, LATEST_RELEASE_URL)
+        header_keys_lower = [k.lower() for k in dict(request.header_items())]
+        self.assertIn("user-agent", header_keys_lower)
+
+    def test_returns_none_on_network_error(self) -> None:
+        with patch("dayz_manager.update_check.urlopen", side_effect=URLError("boom")):
+            self.assertIsNone(fetch_latest_release(timeout=3.0))
+
+    def test_returns_none_when_payload_missing_tag(self) -> None:
+        with patch("dayz_manager.update_check.urlopen", return_value=_fake_http_response({"html_url": "..."})):
+            self.assertIsNone(fetch_latest_release(timeout=3.0))
