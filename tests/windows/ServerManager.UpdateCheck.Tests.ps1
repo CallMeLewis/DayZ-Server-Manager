@@ -162,3 +162,28 @@ Describe 'Merge-UpdateCheckResult' {
         $state.updateCheck.lastAcknowledgedVersion | Should Be ''
     }
 }
+
+Describe 'Format-UpdateCheckNoticeLines' {
+    It 'lists current, latest, and release URL' {
+        $lines = Format-UpdateCheckNoticeLines '1.1.0' '1.2.0' 'https://example.invalid/v1.2.0'
+        ($lines -join "`n") | Should Match '1\.1\.0'
+        ($lines -join "`n") | Should Match '1\.2\.0'
+        ($lines -join "`n") | Should Match 'https://example\.invalid/v1\.2\.0'
+        ($lines -join "`n") | Should Match 'Press Enter to continue'
+    }
+
+    It 'omits the URL line when releaseUrl is empty' {
+        $lines = Format-UpdateCheckNoticeLines '1.1.0' '1.2.0' ''
+        ($lines -join "`n") | Should Not Match 'https?://'
+    }
+}
+
+Describe 'Format-UpdateCheckIndicator' {
+    It 'formats the indicator string when an update is available' {
+        Format-UpdateCheckIndicator '1.1.0' '1.2.0' | Should Be '* Update available: v1.2.0 (current v1.1.0)'
+    }
+
+    It 'returns empty when latest is blank' {
+        Format-UpdateCheckIndicator '1.1.0' '' | Should Be ''
+    }
+}

@@ -1152,6 +1152,71 @@ function Invoke-UpdateCheckRefresh {
 		}
 }
 
+function Format-UpdateCheckNoticeLines {
+	param([string] $CurrentVersion, [string] $LatestVersion, [string] $ReleaseUrl)
+
+	$lines = @(
+		'========================================',
+		' DayZ Server Manager - Update Available',
+		'========================================',
+		'',
+		"A new version is available: v$LatestVersion",
+		"You are running: v$CurrentVersion",
+		''
+	)
+
+	if (-not [string]::IsNullOrWhiteSpace($ReleaseUrl))
+		{
+			$lines += "Release notes: $ReleaseUrl"
+			$lines += ''
+		}
+
+	$lines += 'Press Enter to continue...'
+	return $lines
+}
+
+function Format-UpdateCheckIndicator {
+	param([string] $CurrentVersion, [string] $LatestVersion)
+
+	if ([string]::IsNullOrWhiteSpace($LatestVersion)) { return '' }
+	return ('* Update available: v{0} (current v{1})' -f $LatestVersion, $CurrentVersion)
+}
+
+function Show-UpdateCheckNotice {
+	param([string] $CurrentVersion, [string] $LatestVersion, [string] $ReleaseUrl)
+
+	Clear-MenuScreen
+	foreach ($line in (Format-UpdateCheckNoticeLines $CurrentVersion $LatestVersion $ReleaseUrl))
+		{
+			Write-Host $line
+		}
+	$null = Read-Host
+}
+
+function Invoke-UpdateCheckStartup {
+	if (-not (Test-InteractiveMenuMode)) { return }
+
+	$state = Get-StateConfig
+	$now = Get-Date
+
+	if (-not (Test-UpdateCheckCacheFresh $state.updateCheck $now))
+		{
+			$result = Invoke-UpdateCheckRefresh $script:serverManagerVersion
+			if ($result)
+				{
+					Merge-UpdateCheckResult $state $result $now
+					Save-StateConfig $state
+				}
+		}
+
+	if (Test-UpdateCheckShouldNotify $state.updateCheck $script:serverManagerVersion)
+		{
+			Show-UpdateCheckNotice $script:serverManagerVersion $state.updateCheck.latestVersion $state.updateCheck.releaseUrl
+			Set-UpdateCheckAcknowledged $state $state.updateCheck.latestVersion
+			Save-StateConfig $state
+		}
+}
+
 function Invoke-HybridPythonCoreWithInput {
 	param(
 		[string[]] $Arguments,
@@ -5798,6 +5863,13 @@ function MainMenu {
 		{
 			Show-MenuHeader (Get-MainMenuTitle)
 
+			$state = Get-StateConfig
+			if (Test-UpdateCheckShouldShowIndicator $state.updateCheck $script:serverManagerVersion)
+				{
+					Write-Host (Format-UpdateCheckIndicator $script:serverManagerVersion $state.updateCheck.latestVersion) -ForegroundColor Yellow
+					Write-Host ''
+				}
+
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo " 1) Stable server"
 			echo " 2) Experimental server"
@@ -5852,6 +5924,7 @@ if (!$script:ServerManagerSkipAutoRun)
 			}
 
 		Initialize-ConfigFiles
+		Invoke-UpdateCheckStartup
 
 		if (($u -eq "") -and ($update -eq "") -and ($s -eq "") -and ($server -eq ""))
 			{
