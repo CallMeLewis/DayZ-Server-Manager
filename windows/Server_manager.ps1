@@ -119,7 +119,7 @@ $pidServer = $docFolder + '\pidServer.txt'
 $tempModList = $docFolder + '\tempModList.txt'
 $tempModListServer = $docFolder + '\tempModListServer.txt'
 $tempLoginScript = $docFolder + '\steamcmd-login.tmp'
-$rootConfigPath = Join-Path $PSScriptRoot 'server-manager.config.json'
+$rootConfigPath = Join-Path $docFolder 'server-manager.config.json'
 $stateConfigPath = Join-Path $docFolder 'server-manager.state.json'
 
 #Prepare variables related to SteamCMD folder
@@ -130,6 +130,7 @@ $loadMods = $null
 $script:startupBootstrapActive = $false
 $script:serverManagerVersion = '1.0.1'
 $script:lastServerActionSucceeded = $false
+$script:lastHybridBackendStatus = 'Not checked'
 $script:steamCmdSessionCredential = $null
 $script:steamCmdRetryCredentialResolver = { Request-SteamCmdRetryCredential }
 
@@ -173,6 +174,91 @@ function Get-MainMenuTitle {
 	return "DayZ Server Manager v$script:serverManagerVersion"
 }
 
+function Get-HybridPythonCommandSpec {
+	$override = [string] $env:DAYZ_SERVER_MANAGER_PYTHON
+	if (-not [string]::IsNullOrWhiteSpace($override))
+		{
+			if (Get-Command $override -ErrorAction SilentlyContinue)
+				{
+					return [pscustomobject]@{
+						Command    = $override
+						PrefixArgs = @()
+					}
+				}
+
+			return $null
+		}
+
+	foreach ($candidate in @(
+		[pscustomobject]@{ Command = 'python'; PrefixArgs = @() },
+		[pscustomobject]@{ Command = 'python3'; PrefixArgs = @() },
+		[pscustomobject]@{ Command = 'py'; PrefixArgs = @('-3') }
+	))
+		{
+			if (Get-Command $candidate.Command -ErrorAction SilentlyContinue)
+				{
+					return $candidate
+				}
+		}
+
+	return $null
+}
+
+function Get-HybridPythonInstallCommand {
+	if (Get-Command 'winget' -ErrorAction SilentlyContinue)
+		{
+			return 'winget install -e --id Python.Python.3.12'
+		}
+
+	return 'winget install -e --id Python.Python.3.12'
+}
+
+function Test-HybridPythonPrerequisite {
+	$commandSpec = Get-HybridPythonCommandSpec
+	if ($commandSpec)
+		{
+			return $true
+		}
+
+	Write-Host 'Python 3 is required for the hybrid DayZ Server Manager backend.'
+	Write-Host "Install it with:"
+	Write-Host "  $(Get-HybridPythonInstallCommand)"
+	Write-Host ''
+	return $false
+}
+
+function Invoke-HybridPythonCore {
+	param([string[]] $Arguments)
+
+	$commandSpec = Get-HybridPythonCommandSpec
+	if (!$commandSpec)
+		{
+			return $null
+		}
+
+	$repoRoot = Split-Path $PSScriptRoot -Parent
+
+	Push-Location $repoRoot
+	try
+		{
+			$output = @(& $commandSpec.Command @($commandSpec.PrefixArgs + @('-m', 'dayz_manager.cli') + $Arguments) 2>$null)
+			if ($LASTEXITCODE -ne 0)
+				{
+					return $null
+				}
+
+			return ([string]::Join([Environment]::NewLine, @($output))).TrimEnd("`r", "`n")
+		}
+	catch
+		{
+			return $null
+		}
+	finally
+		{
+			Pop-Location
+		}
+}
+
 function Get-CurrentServerDirectory {
 	$state = Get-StateConfig
 
@@ -212,6 +298,7 @@ function Show-MainMenuStatus {
 			$serverDirectory = 'Not configured'
 		}
 	$steamLoginStatus = Get-SteamCmdCredentialStatus
+	$script:lastHybridBackendStatus = 'Not checked'
 
 	Write-Host " Status"
 	Write-Host " $([string]::new([char]0x2500, 37))"
@@ -228,34 +315,26 @@ function Show-MainMenuStatus {
 	$config = Get-RootConfig
 	if ($config)
 		{
-			$activeName = if ($config.PSObject.Properties.Name -contains 'activeGroup') { [string] $config.activeGroup } else { '' }
-			$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
-
-			if ([string]::IsNullOrWhiteSpace($activeName))
+			$summary = Get-GroupStatusSummaryFromConfig $config
+			if ($summary.groupState -eq 'none')
 				{
 					Write-Host "  Active group : " -NoNewline
 					Write-Host "<none>" -ForegroundColor Yellow
 				}
 			else
 				{
-					$group = Get-ModGroupByName $groups $activeName
-					if (!$group)
+					if ($summary.groupState -eq 'missing')
 						{
 							Write-Host "  Active group : " -NoNewline
-							Write-Host "$activeName (missing)" -ForegroundColor Yellow
+							Write-Host "$($summary.activeGroup) (missing)" -ForegroundColor Yellow
 						}
 					else
 						{
-							$resolved = Resolve-ModGroupAgainstLibrary $config $group
-							$modCount = @($group.mods).Count
-							$serverModCount = @($group.serverMods).Count
-							$danglingCount = @($resolved.DanglingMods).Count + @($resolved.DanglingServerMods).Count
-
-							$line = "  Active group : $activeName   ($modCount mods, $serverModCount serverMods)"
+							$line = "  Active group : $($summary.activeGroup)   ($($summary.clientCount) mods, $($summary.serverCount) serverMods)"
 							Write-Host $line
-							if ($danglingCount -gt 0)
+							if ([int] $summary.danglingCount -gt 0)
 								{
-									Write-Host "   [!] $danglingCount dangling id(s) - open Manage mod groups to fix" -ForegroundColor Yellow
+									Write-Host "   [!] $($summary.danglingCount) dangling id(s) - open Manage mod groups to fix" -ForegroundColor Yellow
 								}
 						}
 				}
@@ -409,6 +488,46 @@ function Backup-LegacyConfigFile {
 		{
 			Rename-Item -LiteralPath $Path -NewName ([System.IO.Path]::GetFileName($backup))
 		}
+}
+
+function Get-WindowsRootConfigPath {
+	param([string] $DocFolder = $docFolder)
+
+	return Join-Path $DocFolder 'server-manager.config.json'
+}
+
+function Get-WindowsLegacyRootConfigPath {
+	return Join-Path $PSScriptRoot 'server-manager.config.json'
+}
+
+function Invoke-WindowsRootConfigMigration {
+	param(
+		[string] $CanonicalPath = (Get-WindowsRootConfigPath),
+		[string] $LegacyPath = (Get-WindowsLegacyRootConfigPath)
+	)
+
+	if (Test-Path -LiteralPath $CanonicalPath)
+		{
+			return $false
+		}
+
+	if (!(Test-Path -LiteralPath $LegacyPath))
+		{
+			return $false
+		}
+
+	$canonicalFolder = Split-Path -Parent $CanonicalPath
+	if (-not [string]::IsNullOrWhiteSpace($canonicalFolder) -and -not (Test-Path -LiteralPath $canonicalFolder))
+		{
+			New-Item -ItemType Directory -Path $canonicalFolder -Force | Out-Null
+		}
+
+	$backupPath = "$LegacyPath.legacy.bak"
+	Copy-Item -LiteralPath $LegacyPath -Destination $CanonicalPath -Force
+	Move-Item -LiteralPath $LegacyPath -Destination $backupPath -Force
+	Write-Host "Migrated legacy Windows config to the Documents location."
+
+	return $true
 }
 
 function Convert-LegacyModList {
@@ -726,8 +845,10 @@ function Select-ActiveModGroupFromPrompt {
 		}
 
 	$selected = $groups[$index - 1]
-	if (Set-ActiveModGroup $config $selected.name)
+	$updatedConfig = Set-ActiveModGroup $config $selected.name
+	if ($updatedConfig)
 		{
+			$config = $updatedConfig
 			Save-RootConfig $config
 			Write-Host "Switched active group to '$($selected.name)'."
 		}
@@ -864,6 +985,7 @@ function Show-MigrationReport {
 }
 
 function Initialize-ConfigFiles {
+	Invoke-WindowsRootConfigMigration -CanonicalPath (Get-WindowsRootConfigPath) -LegacyPath (Get-WindowsLegacyRootConfigPath) | Out-Null
 	$rootReport = @(Initialize-RootConfig $PSScriptRoot $rootConfigPath $docFolder)
 	$stateReport = @(Initialize-StateConfig $docFolder $stateConfigPath $rootConfigPath)
 	$fullReport = @($rootReport) + @($stateReport) | Where-Object { $_ }
@@ -887,19 +1009,85 @@ function New-DefaultStateConfig {
 	}
 }
 
+function Invoke-HybridPythonCoreWithInput {
+	param(
+		[string[]] $Arguments,
+		[string] $InputText
+	)
+
+	$commandSpec = Get-HybridPythonCommandSpec
+	if (!$commandSpec)
+		{
+			return $null
+		}
+
+	$repoRoot = Split-Path $PSScriptRoot -Parent
+
+	Push-Location $repoRoot
+	try
+		{
+			$output = @($InputText | & $commandSpec.Command @($commandSpec.PrefixArgs + @('-m', 'dayz_manager.cli') + $Arguments) 2>$null)
+			if ($LASTEXITCODE -ne 0)
+				{
+					return $null
+				}
+
+			return ([string]::Join([Environment]::NewLine, @($output))).TrimEnd("`r", "`n")
+		}
+	catch
+		{
+			return $null
+		}
+	finally
+		{
+			Pop-Location
+		}
+}
+
+function Invoke-HybridJsonCommandFromConfig {
+	param(
+		$Config,
+		[string[]] $Arguments
+	)
+
+	if (!$Config)
+		{
+			return $null
+		}
+
+	try
+		{
+			$json = ConvertTo-Json -InputObject $Config -Depth 20 -Compress
+			$pythonResult = Invoke-HybridPythonCoreWithInput $Arguments $json
+			if ($null -ne $pythonResult)
+				{
+					$parsed = ConvertFrom-Json $pythonResult
+					$script:lastHybridBackendStatus = 'Python core'
+					return $parsed
+				}
+		}
+	catch
+		{
+		}
+
+	$script:lastHybridBackendStatus = 'Native fallback'
+	return $null
+}
+
 function Get-RootConfig {
-	$config = Get-JsonFile $rootConfigPath
+	$config = Get-JsonFile (Get-WindowsRootConfigPath)
 	if (!$config) { return $config }
 
 	$changed = Invoke-ModGroupsMigration $config
 	if ($changed)
 		{
-			$backupPath = "$rootConfigPath.bak"
+			$rootPath = Get-WindowsRootConfigPath
+			$backupPath = "$rootPath.bak"
 			if (-not (Test-Path -LiteralPath $backupPath))
 				{
 					try
 						{
-							Copy-Item -LiteralPath $rootConfigPath -Destination $backupPath -Force
+							Copy-Item -LiteralPath $rootPath -Destination $backupPath -Force
 						}
 					catch
 						{
@@ -915,7 +1103,178 @@ function Get-RootConfig {
 function Save-RootConfig {
 	param($Config)
 
-	Save-JsonFile $rootConfigPath $Config
+	Save-JsonFile (Get-WindowsRootConfigPath) $Config
+}
+
+function Backup-ImportConfigFile {
+	param(
+		[string] $SourcePath,
+		[string] $BackupPath
+	)
+
+	if (!(Test-Path -LiteralPath $SourcePath))
+		{
+			return $false
+		}
+
+	try
+		{
+			Copy-Item -LiteralPath $SourcePath -Destination $BackupPath -Force
+			return $true
+		}
+	catch
+		{
+			Write-Host "Could not create import backup '$BackupPath': $_"
+			return $false
+		}
+}
+
+function Export-ConfigTransferToPath {
+	param(
+		[string] $DestinationPath,
+		[string] $ConfigPath = (Get-WindowsRootConfigPath)
+	)
+
+	if ([string]::IsNullOrWhiteSpace($DestinationPath))
+		{
+			return $false
+		}
+
+	$pythonResult = Invoke-HybridPythonCore @('export-config-json', '--platform', 'windows', '--config', $ConfigPath)
+	if ($null -eq $pythonResult)
+		{
+			return $false
+		}
+
+	try
+		{
+			$payload = $pythonResult | ConvertFrom-Json -ErrorAction Stop
+		}
+	catch
+		{
+			Write-Host "Could not parse export payload: $_"
+			return $false
+		}
+
+	Save-JsonFile $DestinationPath $payload
+	return $true
+}
+
+function Import-ConfigTransferFromPath {
+	param(
+		[string] $SourcePath,
+		[string] $ConfigPath = (Get-WindowsRootConfigPath)
+	)
+
+	if ([string]::IsNullOrWhiteSpace($SourcePath) -or !(Test-Path -LiteralPath $SourcePath))
+		{
+			return $false
+		}
+
+	try
+		{
+			$sourceText = Get-Content -LiteralPath $SourcePath -Raw
+		}
+	catch
+		{
+			Write-Host "Could not read import file '$SourcePath': $_"
+			return $false
+		}
+
+	$pythonResult = Invoke-HybridPythonCoreWithInput @('import-config-json') $sourceText
+	if ($null -eq $pythonResult)
+		{
+			return $false
+		}
+
+	try
+		{
+			$importedConfig = $pythonResult | ConvertFrom-Json -ErrorAction Stop
+		}
+	catch
+		{
+			Write-Host "Could not parse import payload: $_"
+			return $false
+		}
+
+	if (Test-Path -LiteralPath $ConfigPath)
+		{
+			if (-not (Backup-ImportConfigFile -SourcePath $ConfigPath -BackupPath "$ConfigPath.import.bak"))
+				{
+					return $false
+				}
+		}
+
+	Sync-LaunchParametersFromActiveGroup $importedConfig
+	$groups = if ($importedConfig.PSObject.Properties.Name -contains 'modGroups') { @($importedConfig.modGroups) } else { @() }
+	$target = Get-ModGroupByName $groups $importedConfig.activeGroup
+	if ($target -and ($target.PSObject.Properties.Name -contains 'mission') -and -not [string]::IsNullOrWhiteSpace($target.mission))
+		{
+			Sync-ServerConfigMission $importedConfig $target.mission
+		}
+
+	Save-JsonFile $ConfigPath $importedConfig
+	Update-GeneratedLaunchFromRootConfig $importedConfig
+	return $true
+}
+
+function ConfigTransfer_menu {
+	while ($true)
+		{
+			Show-MenuHeader 'Config Transfer'
+			Write-Host " Use this submenu to export or import the canonical config."
+			Write-Host ""
+			Write-Host " $([string]::new([char]0x2500, 37))"
+			echo " 1) Export config"
+			echo " 2) Import config"
+			echo " 3) Back to Main Menu"
+			Write-Host " $([string]::new([char]0x2500, 37))"
+			echo ""
+
+			$select = Read-Host -Prompt 'Select an option'
+
+			switch ($select)
+				{
+					1 {
+						$destinationPath = Read-Host -Prompt 'Export destination path'
+						if (Export-ConfigTransferToPath -DestinationPath $destinationPath)
+							{
+								Write-Host "Exported config to '$destinationPath'."
+							}
+						else
+							{
+								Write-Host "Could not export config."
+							}
+						Write-Host ""
+						Pause-BeforeMenu
+						continue
+					}
+					2 {
+						$sourcePath = Read-Host -Prompt 'Import source path'
+						if (Import-ConfigTransferFromPath -SourcePath $sourcePath)
+							{
+								Write-Host "Imported config from '$sourcePath'."
+							}
+						else
+							{
+								Write-Host "Could not import config."
+							}
+						Write-Host ""
+						Pause-BeforeMenu
+						continue
+					}
+					3 {
+						return
+					}
+					Default {
+						Write-Host ""
+						Write-Host "Select a number from the list (1-3)."
+						Write-Host ""
+						Pause-BeforeMenu
+						continue
+					}
+				}
+		}
 }
 
 function Get-StateConfig {
@@ -1357,13 +1716,286 @@ function Get-ConfiguredWorkshopIds {
 		[string] $Kind
 	)
 
-	if (!$Config -or !$Config.$Kind)
+	if (!$Config)
+		{
+			return @()
+		}
+
+	$pythonResult = Invoke-HybridJsonCommandFromConfig $Config @('configured-ids-json', '--platform', 'windows', '--kind', $Kind)
+	if ($null -ne $pythonResult)
+		{
+			return @($pythonResult | ForEach-Object { [string] $_ })
+		}
+
+	if (!$Config.$Kind)
 		{
 			return @()
 		}
 
 	$validated = Get-ValidatedWorkshopIdSet @($Config.$Kind)
 	return @($validated.Valid)
+}
+
+function Get-ActiveWorkshopIdsFromConfig {
+	param(
+		$Config,
+		[ValidateSet('mods','serverMods')]
+		[string] $Kind
+	)
+
+	if (!$Config)
+		{
+			return @()
+		}
+
+	$pythonResult = Invoke-HybridJsonCommandFromConfig $Config @('active-ids-json', '--platform', 'windows', '--kind', $Kind, '--strict-active-group')
+	if ($null -ne $pythonResult)
+		{
+			return @($pythonResult | ForEach-Object { [string] $_ })
+		}
+
+	$activeName = if ($Config.PSObject.Properties.Name -contains 'activeGroup') { [string] $Config.activeGroup } else { '' }
+	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
+
+	if ([string]::IsNullOrWhiteSpace($activeName))
+		{
+			return @()
+		}
+
+	$group = Get-ModGroupByName $groups $activeName
+	if (!$group)
+		{
+			return @()
+		}
+
+	if ($Kind -eq 'serverMods')
+		{
+			return @(if ($group.serverMods) { @($group.serverMods | Where-Object { $_ }) } else { @() })
+		}
+
+	return @(if ($group.mods) { @($group.mods | Where-Object { $_ }) } else { @() })
+}
+
+function Get-GroupStatusSummaryFromConfig {
+	param($Config)
+
+	if (!$Config)
+		{
+			return $null
+		}
+
+	$pythonResult = Invoke-HybridJsonCommandFromConfig $Config @('group-status-json', '--platform', 'windows')
+	if ($null -ne $pythonResult)
+		{
+			return $pythonResult
+		}
+
+	$activeName = if ($Config.PSObject.Properties.Name -contains 'activeGroup') { [string] $Config.activeGroup } else { '' }
+	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
+
+	if ([string]::IsNullOrWhiteSpace($activeName))
+		{
+			return [pscustomobject]@{
+				activeGroup   = ''
+				groupState    = 'none'
+				clientCount   = 0
+				serverCount   = 0
+				danglingCount = 0
+				missionName   = ''
+			}
+		}
+
+	$group = Get-ModGroupByName $groups $activeName
+	if (!$group)
+		{
+			return [pscustomobject]@{
+				activeGroup   = $activeName
+				groupState    = 'missing'
+				clientCount   = 0
+				serverCount   = 0
+				danglingCount = 0
+				missionName   = ''
+			}
+		}
+
+	$resolved = Resolve-ModGroupAgainstLibrary $Config $group
+	return [pscustomobject]@{
+		activeGroup   = $activeName
+		groupState    = 'present'
+		clientCount   = @($group.mods).Count
+		serverCount   = @($group.serverMods).Count
+		danglingCount = @($resolved.DanglingMods).Count + @($resolved.DanglingServerMods).Count
+		missionName   = if ($group.PSObject.Properties.Name -contains 'mission') { [string] $group.mission } else { '' }
+	}
+}
+
+function Get-GroupCatalogSummaryFromConfig {
+	param($Config)
+
+	if (!$Config)
+		{
+			return $null
+		}
+
+	$pythonResult = Invoke-HybridJsonCommandFromConfig $Config @('group-catalog-json', '--platform', 'windows')
+	if ($null -ne $pythonResult)
+		{
+			return $pythonResult
+		}
+
+	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
+	return [pscustomobject]@{
+		activeGroup      = if ($Config.PSObject.Properties.Name -contains 'activeGroup') { [string] $Config.activeGroup } else { '' }
+		libraryClientIds = @(Get-ConfiguredWorkshopIds $Config 'mods')
+		libraryServerIds = @(Get-ConfiguredWorkshopIds $Config 'serverMods')
+		groups           = @(
+			foreach ($group in $groups)
+				{
+					[pscustomobject]@{
+						name           = [string] $group.name
+						modCount       = @($group.mods).Count
+						serverModCount = @($group.serverMods).Count
+						missionName    = if ($group.PSObject.Properties.Name -contains 'mission') { [string] $group.mission } else { '' }
+					}
+				}
+		)
+	}
+}
+
+function Get-GroupDetailFromConfig {
+	param(
+		$Config,
+		[string] $GroupName
+	)
+
+	if (!$Config -or [string]::IsNullOrWhiteSpace($GroupName))
+		{
+			return $null
+		}
+
+	$detail = Invoke-HybridJsonCommandFromConfig $Config @('group-detail-json', '--platform', 'windows', '--group-name', $GroupName)
+	if ($null -ne $detail)
+		{
+			return [pscustomobject]@{
+				GroupName          = [string] $detail.groupName
+				MissionName        = [string] $detail.missionName
+				ResolvedMods       = @($detail.resolvedMods)
+				DanglingMods       = @($detail.danglingMods | ForEach-Object { [string] $_ })
+				ResolvedServerMods = @($detail.resolvedServerMods)
+				DanglingServerMods = @($detail.danglingServerMods | ForEach-Object { [string] $_ })
+			}
+		}
+
+	return $null
+}
+
+function Get-WorkshopUsageFromConfig {
+	param(
+		$Config,
+		[string] $WorkshopId,
+		[ValidateSet('mods','serverMods')]
+		[string] $Kind
+	)
+
+	if (!$Config -or [string]::IsNullOrWhiteSpace($WorkshopId))
+		{
+			return $null
+		}
+
+	return (Invoke-HybridJsonCommandFromConfig $Config @('workshop-usage-json', '--platform', 'windows', '--workshop-id', $WorkshopId, '--kind', $Kind))
+}
+
+function Invoke-HybridGroupMutationFromConfig {
+	param(
+		$Config,
+		[ValidateSet('set-active','rename','delete','upsert')]
+		[string] $Operation,
+		[string] $GroupName = $null,
+		[string] $OldName = $null,
+		[string] $NewName = $null,
+		[string] $ExistingName = $null,
+		[string[]] $ClientIds = @(),
+		[string[]] $ServerIds = @(),
+		[string] $MissionName = $null
+	)
+
+	if (!$Config)
+		{
+			return $null
+		}
+
+	$pythonArgs = @('mutate-groups-json', '--platform', 'windows', '--operation', $Operation)
+	if ($null -ne $GroupName) { $pythonArgs += @('--group-name', $GroupName) }
+	if ($null -ne $OldName) { $pythonArgs += @('--old-name', $OldName) }
+	if ($null -ne $NewName) { $pythonArgs += @('--new-name', $NewName) }
+	if ($null -ne $ExistingName) { $pythonArgs += @('--existing-name', $ExistingName) }
+	if ($ClientIds.Count -gt 0) { $pythonArgs += @('--client-ids-json', (ConvertTo-Json -InputObject @($ClientIds) -Compress)) }
+	if ($ServerIds.Count -gt 0) { $pythonArgs += @('--server-ids-json', (ConvertTo-Json -InputObject @($ServerIds) -Compress)) }
+	if ($null -ne $MissionName) { $pythonArgs += @('--mission-name', $MissionName) }
+	return (Invoke-HybridJsonCommandFromConfig $Config $pythonArgs)
+}
+
+function Invoke-HybridRemoveWorkshopIdFromConfig {
+	param(
+		$Config,
+		[string] $WorkshopId
+	)
+
+	if (!$Config -or [string]::IsNullOrWhiteSpace($WorkshopId))
+		{
+			return $null
+		}
+
+	return (Invoke-HybridJsonCommandFromConfig $Config @('remove-workshop-id-json', '--platform', 'windows', '--workshop-id', $WorkshopId))
+}
+
+function Invoke-HybridInventoryMutationFromConfig {
+	param(
+		$Config,
+		[ValidateSet('add-workshop-item','move-workshop-item')]
+		[string] $Operation,
+		[ValidateSet('mods','serverMods')]
+		[string] $TargetKind,
+		[string] $WorkshopId,
+		[string] $ItemName = $null,
+		[string] $ItemUrl = $null
+	)
+
+	if (!$Config -or [string]::IsNullOrWhiteSpace($WorkshopId))
+		{
+			return $null
+		}
+
+	$pythonArgs = @(
+		'mutate-inventory-json',
+		'--platform', 'windows',
+		'--operation', $Operation,
+		'--target-kind', $TargetKind,
+		'--workshop-id', $WorkshopId
+	)
+	if ($null -ne $ItemName) { $pythonArgs += @('--item-name', $ItemName) }
+	if ($null -ne $ItemUrl) { $pythonArgs += @('--item-url', $ItemUrl) }
+	return (Invoke-HybridJsonCommandFromConfig $Config $pythonArgs)
+}
+
+function Invoke-HybridGroupUpsertFromConfig {
+	param(
+		$Config,
+		[string] $GroupName,
+		[string[]] $ClientIds = @(),
+		[string[]] $ServerIds = @(),
+		[string] $MissionName = $null,
+		[string] $ExistingName = $null
+	)
+
+	return Invoke-HybridGroupMutationFromConfig `
+		-Config $Config `
+		-Operation 'upsert' `
+		-GroupName $GroupName `
+		-ExistingName $ExistingName `
+		-ClientIds @($ClientIds) `
+		-ServerIds @($ServerIds) `
+		-MissionName $MissionName
 }
 
 function Get-ValidatedWorkshopIdSet {
@@ -1512,12 +2144,21 @@ function Select-MissionFromList {
 function ConvertTo-ModLaunchString {
 	param([string[]] $WorkshopIds)
 
-	if (!$WorkshopIds -or ($WorkshopIds.Count -eq 0))
+	$normalizedIds = @($WorkshopIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | ForEach-Object { [string] $_ })
+
+	$pythonArgs = @('launch-string') + $normalizedIds
+	$pythonResult = Invoke-HybridPythonCore $pythonArgs
+	if ($null -ne $pythonResult)
+		{
+			return $pythonResult
+		}
+
+	if (!$normalizedIds -or ($normalizedIds.Count -eq 0))
 		{
 			return ''
 		}
 
-	return (($WorkshopIds | ForEach-Object { "$_;" }) -join '')
+	return (($normalizedIds | ForEach-Object { "$_;" }) -join '')
 }
 
 function Get-ModIdsFromLaunchParameters {
@@ -1525,6 +2166,19 @@ function Get-ModIdsFromLaunchParameters {
 		[string] $Parameters,
 		[string] $Kind
 	)
+
+	$pythonArgs = @('get-mod-ids', '--kind', $Kind, '--parameters', $Parameters)
+	$pythonResult = Invoke-HybridPythonCore $pythonArgs
+	if ($null -ne $pythonResult)
+		{
+			try
+				{
+					return @((ConvertFrom-Json $pythonResult) | ForEach-Object { [string] $_ })
+				}
+			catch
+				{
+				}
+		}
 
 	if ([string]::IsNullOrWhiteSpace($Parameters))
 		{
@@ -1630,6 +2284,15 @@ function Set-ModsInLaunchParameters {
 		[string[]] $WorkshopIds
 	)
 
+	$normalizedIds = @($WorkshopIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | ForEach-Object { [string] $_ })
+
+	$pythonArgs = @('set-mods', '--kind', $Kind, '--parameters', $Parameters) + $normalizedIds
+	$pythonResult = Invoke-HybridPythonCore $pythonArgs
+	if ($null -ne $pythonResult)
+		{
+			return $pythonResult
+		}
+
 	if ([string]::IsNullOrWhiteSpace($Parameters))
 		{
 			return $Parameters
@@ -1647,7 +2310,7 @@ function Set-ModsInLaunchParameters {
 	$openQuote = $match.Groups[1].Value
 	$closeQuote = $match.Groups[3].Value
 
-	$newIds = if ($WorkshopIds -and $WorkshopIds.Count -gt 0) { ($WorkshopIds -join ';') + ';' } else { '' }
+	$newIds = if ($normalizedIds -and $normalizedIds.Count -gt 0) { ($normalizedIds -join ';') + ';' } else { '' }
 	$replacement = "$openQuote-$flag=$newIds$closeQuote"
 	$result = $Parameters.Substring(0, $match.Index) + $replacement + $Parameters.Substring($match.Index + $match.Length)
 	return $result
@@ -1790,25 +2453,24 @@ function Sync-LaunchParametersFromActiveGroup {
 	if (-not ($Config.PSObject.Properties.Name -contains 'launchParameters')) { return }
 	if ([string]::IsNullOrWhiteSpace($Config.launchParameters)) { return }
 
-	$activeName = if ($Config.PSObject.Properties.Name -contains 'activeGroup') { [string] $Config.activeGroup } else { '' }
-	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
+	$modIds = Get-ActiveWorkshopIdsFromConfig $Config 'mods'
+	$serverModIds = Get-ActiveWorkshopIdsFromConfig $Config 'serverMods'
+	$updated = $Config.launchParameters
+	$updated = [regex]::Replace($updated, '\s*"?-mod=[^"\s]*"?', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+	$updated = [regex]::Replace($updated, '\s*"?-serverMod=[^"\s]*"?', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+	$updated = ($updated -replace '\s+', ' ').Trim()
 
-	$modIds = @()
-	$serverModIds = @()
+	$modLaunch = ConvertTo-ModLaunchString $modIds
+	$serverModLaunch = ConvertTo-ModLaunchString $serverModIds
 
-	if (-not [string]::IsNullOrWhiteSpace($activeName))
+	if (-not [string]::IsNullOrWhiteSpace($updated))
 		{
-			$group = Get-ModGroupByName $groups $activeName
-			if ($group)
-				{
-					$modIds = if ($group.mods) { @($group.mods | Where-Object { $_ }) } else { @() }
-					$serverModIds = if ($group.serverMods) { @($group.serverMods | Where-Object { $_ }) } else { @() }
-				}
+			$updated += ' '
 		}
 
-	$updated = Set-ModsInLaunchParameters $Config.launchParameters 'mods' $modIds
-	$updated = Set-ModsInLaunchParameters $updated 'serverMods' $serverModIds
-	$Config.launchParameters = $updated
+	$updated += '"-mod=' + $modLaunch + '"'
+	$updated += ' "-serverMod=' + $serverModLaunch + '"'
+	$Config.launchParameters = $updated.Trim()
 }
 
 function Sync-ServerConfigMission {
@@ -1831,11 +2493,39 @@ function Set-ActiveModGroup {
 		[string] $GroupName
 	)
 
-	if (!$Config) { return $false }
+	if (!$Config) { return $null }
+
+	$updatedConfig = Invoke-HybridGroupMutationFromConfig -Config $Config -Operation 'set-active' -GroupName $GroupName
+	if ($updatedConfig)
+		{
+			Sync-LaunchParametersFromActiveGroup $updatedConfig
+			$groups = if ($updatedConfig.PSObject.Properties.Name -contains 'modGroups') { @($updatedConfig.modGroups) } else { @() }
+			$target = Get-ModGroupByName $groups $updatedConfig.activeGroup
+			if ($target -and $target.PSObject.Properties.Name -contains 'mission' -and -not [string]::IsNullOrWhiteSpace($target.mission))
+				{
+					Sync-ServerConfigMission $updatedConfig $target.mission
+				}
+			return $updatedConfig
+		}
+
+	if ([string]::IsNullOrWhiteSpace($GroupName))
+		{
+			if (-not ($Config.PSObject.Properties.Name -contains 'activeGroup'))
+				{
+					$Config | Add-Member -NotePropertyName activeGroup -NotePropertyValue '' -Force
+				}
+			else
+				{
+					$Config.activeGroup = ''
+				}
+
+			Sync-LaunchParametersFromActiveGroup $Config
+			return $Config
+		}
 
 	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
 	$target = Get-ModGroupByName $groups $GroupName
-	if (!$target) { return $false }
+	if (!$target) { return $null }
 
 	if (-not ($Config.PSObject.Properties.Name -contains 'activeGroup'))
 		{
@@ -1851,7 +2541,7 @@ function Set-ActiveModGroup {
 		{
 			Sync-ServerConfigMission $Config $target.mission
 		}
-	return $true
+	return $Config
 }
 
 function Rename-ModGroup {
@@ -1861,19 +2551,25 @@ function Rename-ModGroup {
 		[string] $NewName
 	)
 
-	if (!$Config) { return $false }
+	if (!$Config) { return $null }
+
+	$updatedConfig = Invoke-HybridGroupMutationFromConfig -Config $Config -Operation 'rename' -OldName $OldName -NewName $NewName
+	if ($updatedConfig)
+		{
+			return $updatedConfig
+		}
 	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
 	$target = Get-ModGroupByName $groups $OldName
-	if (!$target) { return $false }
+	if (!$target) { return $null }
 
-	if (-not (Test-ModGroupNameValid $NewName $groups -IgnoreName $OldName)) { return $false }
+	if (-not (Test-ModGroupNameValid $NewName $groups -IgnoreName $OldName)) { return $null }
 
 	$target.name = $NewName.Trim()
 	if ($Config.activeGroup -eq $OldName)
 		{
 			$Config.activeGroup = $target.name
 		}
-	return $true
+	return $Config
 }
 
 function Remove-ModGroup {
@@ -1882,16 +2578,22 @@ function Remove-ModGroup {
 		[string] $Name
 	)
 
-	if (!$Config) { return $false }
+	if (!$Config) { return $null }
+
+	$updatedConfig = Invoke-HybridGroupMutationFromConfig -Config $Config -Operation 'delete' -GroupName $Name
+	if ($updatedConfig)
+		{
+			return $updatedConfig
+		}
 	$groups = if ($Config.PSObject.Properties.Name -contains 'modGroups') { @($Config.modGroups) } else { @() }
-	if (@($groups).Count -le 1) { return $false }
-	if ($Config.activeGroup -eq $Name) { return $false }
+	if (@($groups).Count -le 1) { return $null }
+	if ($Config.activeGroup -eq $Name) { return $null }
 
 	$target = Get-ModGroupByName $groups $Name
-	if (!$target) { return $false }
+	if (!$target) { return $null }
 
 	$Config.modGroups = @($groups | Where-Object { $_.name -ne $target.name })
-	return $true
+	return $Config
 }
 
 function Remove-ModFromAllGroups {
@@ -2584,8 +3286,8 @@ function Show-ConfiguredMods {
 				{
 					Write-Host "    $($item.url)"
 				}
+			Write-Host ""
 	}
-	Write-Host ""
 }
 
 function Show-ConfiguredModsMenu {
@@ -2619,6 +3321,22 @@ function Show-ConfiguredModsMenu {
 			echo "`n"
 			Pause-BeforeMenu
 		}
+}
+
+function Prompt-ConfiguredModKind {
+	$rawKind = Read-Host -Prompt 'Mod type (client/server)'
+	if ([string]::IsNullOrWhiteSpace($rawKind) -or $rawKind -match '^(client|c)$')
+		{
+			return 'mods'
+		}
+	if ($rawKind -match '^(server|s)$')
+		{
+			return 'serverMods'
+		}
+
+	Write-Host "Select 'client' or 'server'."
+	Write-Host ""
+	return $null
 }
 
 function Test-SafeLaunchParameters {
@@ -2675,7 +3393,21 @@ function Add-ConfiguredModFromPrompt {
 					$url = "https://steamcommunity.com/sharedfiles/filedetails/?id=$workshopId"
 				}
 
-	Add-WorkshopModToConfig $config $Kind $workshopId $name $url
+	$updatedConfig = Invoke-HybridInventoryMutationFromConfig `
+		-Config $config `
+		-Operation 'add-workshop-item' `
+		-TargetKind $Kind `
+		-WorkshopId $workshopId `
+		-ItemName $name `
+		-ItemUrl $url
+	if ($updatedConfig)
+		{
+			$config = $updatedConfig
+		}
+	else
+		{
+			Add-WorkshopModToConfig $config $Kind $workshopId $name $url
+		}
 
 	# Offer to add to saved launch parameters if they exist
 	$launchParams = Get-ConfiguredLaunchParameters $config
@@ -2759,16 +3491,29 @@ function Remove-ConfiguredModFromPrompt {
 	$workshopId = $selected.workshopId
 	$configKind = $selected.configKind
 
-	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
-	$referencing = Get-GroupsReferencingMod $groups $workshopId $configKind
-	if (@($referencing).Count -gt 0)
+	$usageSummary = Get-WorkshopUsageFromConfig $config $workshopId $configKind
+	$referencingNames = @()
+	$affectedActive = $false
+	if ($usageSummary)
+		{
+			$referencingNames = @($usageSummary.referencingGroups | ForEach-Object { [string] $_ })
+			$affectedActive = [bool] $usageSummary.activeGroupAffected
+		}
+	else
+		{
+			$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
+			$referencing = Get-GroupsReferencingMod $groups $workshopId $configKind
+			$referencingNames = @($referencing | ForEach-Object { [string] $_.name })
+			$affectedActive = $referencingNames -contains [string] $config.activeGroup
+		}
+	if (@($referencingNames).Count -gt 0)
 		{
 			$displayName = if ([string]::IsNullOrWhiteSpace($selected.name)) { $workshopId } else { "$($selected.name) ($workshopId)" }
 			Write-Host ""
-			Write-Host "Mod '$displayName' is used in $(@($referencing).Count) group(s):"
-			foreach ($g in $referencing)
+			Write-Host "Mod '$displayName' is used in $(@($referencingNames).Count) group(s):"
+			foreach ($groupName in $referencingNames)
 				{
-					Write-Host "  - $($g.name)"
+					Write-Host "  - $groupName"
 				}
 			Write-Host ""
 			$confirm = Read-Host -Prompt 'Remove it from these groups and delete? (y/n)'
@@ -2778,11 +3523,25 @@ function Remove-ConfiguredModFromPrompt {
 					Write-Host ""
 					return
 				}
-
-			Remove-ModFromAllGroups $config $workshopId $configKind
 		}
 
-	Remove-WorkshopModFromConfig $config $workshopId
+	$updatedConfig = Invoke-HybridRemoveWorkshopIdFromConfig $config $workshopId
+	if ($updatedConfig)
+		{
+			$config = $updatedConfig
+			if ($affectedActive)
+				{
+					Sync-LaunchParametersFromActiveGroup $config
+				}
+		}
+	else
+		{
+			if (@($referencingNames).Count -gt 0)
+				{
+					Remove-ModFromAllGroups $config $workshopId $configKind
+				}
+			Remove-WorkshopModFromConfig $config $workshopId
+		}
 
 	Save-RootConfig $config
 	Update-GeneratedLaunchFromRootConfig $config
@@ -2809,17 +3568,32 @@ function Move-ConfiguredModFromPrompt {
 	echo "2) Server mods (-serverMod)"
 	echo "`n"
 	$target = Read-Host -Prompt 'Select an option'
+	$targetKind = $null
 
 	if ($target -eq '1')
 		{
-			Move-WorkshopModInConfig $config $workshopId 'mods'
+			$targetKind = 'mods'
 		} elseif ($target -eq '2') {
-					Move-WorkshopModInConfig $config $workshopId 'serverMods'
+					$targetKind = 'serverMods'
 				} else {
 							echo "Select a number from the list (1-2)."
 							echo "`n"
 							return
 						}
+
+	$updatedConfig = Invoke-HybridInventoryMutationFromConfig `
+		-Config $config `
+		-Operation 'move-workshop-item' `
+		-TargetKind $targetKind `
+		-WorkshopId $workshopId
+	if ($updatedConfig)
+		{
+			$config = $updatedConfig
+		}
+	else
+		{
+			Move-WorkshopModInConfig $config $workshopId $targetKind
+		}
 
 	Save-RootConfig $config
 	Update-GeneratedLaunchFromRootConfig $config
@@ -2836,10 +3610,10 @@ function ModManager_menu {
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo " 1) List client mods"
 			echo " 2) List server mods"
-			echo " 3) Add client mod"
-			echo " 4) Add server mod"
-			echo " 5) Move mod between client and server lists"
-			echo " 6) Remove mod from configuration"
+			echo " 3) Add mod"
+			echo " 4) Remove mod"
+			echo " 5) Move mod between client/server"
+			echo " 6) Sync/update configured mods now"
 			echo " 7) Back to Main Menu"
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo ""
@@ -2857,13 +3631,15 @@ function ModManager_menu {
 						continue
 					}
 					3 {
-						Add-ConfiguredModFromPrompt 'mods'
+						$kind = Prompt-ConfiguredModKind
+						if (!$kind) { Pause-BeforeMenu; continue }
+						Add-ConfiguredModFromPrompt $kind
 						Pause-BeforeMenu
 						continue
 					}
 					4 {
-						Add-ConfiguredModFromPrompt 'serverMods'
-						Pause-BeforeMenu
+						$result = Remove-ConfiguredModFromPrompt
+						if ($result -ne $false) { Pause-BeforeMenu }
 						continue
 					}
 					5 {
@@ -2872,8 +3648,14 @@ function ModManager_menu {
 						continue
 					}
 					6 {
-						$result = Remove-ConfiguredModFromPrompt
-						if ($result -ne $false) { Pause-BeforeMenu }
+						Clear-MenuScreen
+						[void](SteamCMDFolder)
+						[void](SteamCMDExe)
+						$previousSelect = $select
+						$select = 2
+						SteamLogin
+						$select = $previousSelect
+						Pause-BeforeMenu
 						continue
 					}
 					7 {
@@ -2896,13 +3678,15 @@ function ModGroupManager_menu {
 			Show-MenuHeader 'Manage Mod Groups'
 
 			Write-Host " $([string]::new([char]0x2500, 37))"
-			echo " 1) Create group"
+			echo " 1) New group"
 			echo " 2) Edit group"
 			echo " 3) Rename group"
-			echo " 4) Clone group"
-			echo " 5) Delete group"
+			echo " 4) Copy group"
+			echo " 5) Remove group"
 			echo " 6) View group"
-			echo " 7) Back to Main Menu"
+			echo " 7) Set active group"
+			echo " 8) Clear active group"
+			echo " 9) Back to Main Menu"
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo ""
 
@@ -2915,15 +3699,13 @@ function ModGroupManager_menu {
 					3 { Rename-ModGroupFromPrompt; Pause-BeforeMenu; continue }
 					4 { Copy-ModGroupFromPrompt; Pause-BeforeMenu; continue }
 					5 { Remove-ModGroupFromPrompt; Pause-BeforeMenu; continue }
-					6 {
-						$result = Show-ModGroupDetail
-						if ($result -ne $false) { Pause-BeforeMenu }
-						continue
-					}
-					7 { return }
+					6 { $result = Show-ModGroupDetail; if ($result -ne $false) { Pause-BeforeMenu }; continue }
+					7 { Select-ActiveModGroupFromPrompt; Pause-BeforeMenu; continue }
+					8 { Clear-ActiveModGroupFromPrompt; Pause-BeforeMenu; continue }
+					9 { return }
 					Default {
 						echo "`n"
-						echo "Select a number from the list (1-7)."
+						echo "Select a number from the list (1-9)."
 						echo "`n"
 						Pause-BeforeMenu
 						continue
@@ -2935,7 +3717,8 @@ function ModGroupManager_menu {
 function Select-ModGroupFromList {
 	param(
 		$Groups,
-		[string] $Prompt
+		[string] $Prompt,
+		$CatalogSummary = $null
 	)
 
 	if (@($Groups).Count -eq 0)
@@ -2948,11 +3731,21 @@ function Select-ModGroupFromList {
 	Write-Host ""
 	Write-Host " Groups:"
 	Write-Host " $([string]::new([char]0x2500, 37))"
+	$catalogRows = if ($CatalogSummary -and $CatalogSummary.PSObject.Properties.Name -contains 'groups') { @($CatalogSummary.groups) } else { @() }
 	for ($i = 0; $i -lt $Groups.Count; $i++)
 		{
 			$g = $Groups[$i]
-			$modCount = @($g.mods).Count
-			$smCount = @($g.serverMods).Count
+			$row = if ($i -lt $catalogRows.Count) { $catalogRows[$i] } else { $null }
+			if ($row -and [string] $row.name -eq [string] $g.name)
+				{
+					$modCount = [int] $row.modCount
+					$smCount = [int] $row.serverModCount
+				}
+			else
+				{
+					$modCount = @($g.mods).Count
+					$smCount = @($g.serverMods).Count
+				}
 			Write-Host "  $($i + 1)) $($g.name) ($modCount mods, $smCount serverMods)"
 		}
 	Write-Host ""
@@ -3008,14 +3801,27 @@ function New-ModGroupFromPrompt {
 				}
 		}
 
-	$updatedGroups = @($groups) + $group
-	if ($config.PSObject.Properties.Name -contains 'modGroups')
+	$updatedConfig = Invoke-HybridGroupUpsertFromConfig `
+		-Config $config `
+		-GroupName $group.name `
+		-ClientIds @($group.mods) `
+		-ServerIds @($group.serverMods) `
+		-MissionName $(if ($group.PSObject.Properties.Name -contains 'mission') { [string] $group.mission } else { $null })
+	if ($updatedConfig)
 		{
-			$config.modGroups = $updatedGroups
+			$config = $updatedConfig
 		}
 	else
 		{
-			$config | Add-Member -NotePropertyName modGroups -NotePropertyValue $updatedGroups -Force
+			$updatedGroups = @($groups) + $group
+			if ($config.PSObject.Properties.Name -contains 'modGroups')
+				{
+					$config.modGroups = $updatedGroups
+				}
+			else
+				{
+					$config | Add-Member -NotePropertyName modGroups -NotePropertyValue $updatedGroups -Force
+				}
 		}
 
 	Save-RootConfig $config
@@ -3028,7 +3834,8 @@ function Edit-ModGroupFromPrompt {
 	if (!$config) { return }
 
 	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
-	$group = Select-ModGroupFromList $groups 'Select a group to edit'
+	$catalogSummary = Get-GroupCatalogSummaryFromConfig $config
+	$group = Select-ModGroupFromList $groups 'Select a group to edit' $catalogSummary
 	if (!$group) { return }
 
 	$result = Invoke-ModGroupChecklistEditor $config $group
@@ -3054,6 +3861,18 @@ function Edit-ModGroupFromPrompt {
 				}
 		}
 
+	$updatedConfig = Invoke-HybridGroupUpsertFromConfig `
+		-Config $config `
+		-GroupName $group.name `
+		-ExistingName $group.name `
+		-ClientIds @($group.mods) `
+		-ServerIds @($group.serverMods) `
+		-MissionName $(if ($group.PSObject.Properties.Name -contains 'mission') { [string] $group.mission } else { $null })
+	if ($updatedConfig)
+		{
+			$config = $updatedConfig
+		}
+
 	if ($config.activeGroup -eq $group.name)
 		{
 			Sync-LaunchParametersFromActiveGroup $config
@@ -3068,12 +3887,15 @@ function Rename-ModGroupFromPrompt {
 	$config = Get-RootConfig
 	if (!$config) { return }
 	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
-	$group = Select-ModGroupFromList $groups 'Select a group to rename'
+	$catalogSummary = Get-GroupCatalogSummaryFromConfig $config
+	$group = Select-ModGroupFromList $groups 'Select a group to rename' $catalogSummary
 	if (!$group) { return }
 
 	$new = Read-Host -Prompt "New name for '$($group.name)'"
-	if (Rename-ModGroup $config $group.name $new)
+	$updatedConfig = Rename-ModGroup $config $group.name $new
+	if ($updatedConfig)
 		{
+			$config = $updatedConfig
 			Save-RootConfig $config
 			Write-Host "Renamed to '$($new.Trim())'."
 		}
@@ -3088,7 +3910,8 @@ function Copy-ModGroupFromPrompt {
 	$config = Get-RootConfig
 	if (!$config) { return }
 	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
-	$source = Select-ModGroupFromList $groups 'Select a group to clone'
+	$catalogSummary = Get-GroupCatalogSummaryFromConfig $config
+	$source = Select-ModGroupFromList $groups 'Select a group to clone' $catalogSummary
 	if (!$source) { return }
 
 	$name = Read-Host -Prompt "Name for the clone of '$($source.name)'"
@@ -3111,7 +3934,20 @@ function Copy-ModGroupFromPrompt {
 	$clone.mods = @($result.Mods)
 	$clone.serverMods = @($result.ServerMods)
 
-	$config.modGroups = @($groups) + $clone
+	$updatedConfig = Invoke-HybridGroupUpsertFromConfig `
+		-Config $config `
+		-GroupName $clone.name `
+		-ClientIds @($clone.mods) `
+		-ServerIds @($clone.serverMods) `
+		-MissionName $(if ($clone.PSObject.Properties.Name -contains 'mission') { [string] $clone.mission } else { $null })
+	if ($updatedConfig)
+		{
+			$config = $updatedConfig
+		}
+	else
+		{
+			$config.modGroups = @($groups) + $clone
+		}
 	Save-RootConfig $config
 	Write-Host "Created clone '$($clone.name)'."
 	Write-Host ""
@@ -3121,7 +3957,8 @@ function Remove-ModGroupFromPrompt {
 	$config = Get-RootConfig
 	if (!$config) { return }
 	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
-	$group = Select-ModGroupFromList $groups 'Select a group to delete'
+	$catalogSummary = Get-GroupCatalogSummaryFromConfig $config
+	$group = Select-ModGroupFromList $groups 'Select a group to delete' $catalogSummary
 	if (!$group) { return }
 
 	if ($config.activeGroup -eq $group.name)
@@ -3145,8 +3982,10 @@ function Remove-ModGroupFromPrompt {
 			return
 		}
 
-	if (Remove-ModGroup $config $group.name)
+	$updatedConfig = Remove-ModGroup $config $group.name
+	if ($updatedConfig)
 		{
+			$config = $updatedConfig
 			Save-RootConfig $config
 			Write-Host "Deleted '$($group.name)'."
 		}
@@ -3157,15 +3996,45 @@ function Remove-ModGroupFromPrompt {
 	Write-Host ""
 }
 
+function Clear-ActiveModGroupFromPrompt {
+	$config = Get-RootConfig
+	if (!$config) { return }
+
+	if ([string]::IsNullOrWhiteSpace([string] $config.activeGroup))
+		{
+			Write-Host "No active group is currently set."
+			Write-Host ""
+			return
+		}
+
+	$updatedConfig = Set-ActiveModGroup $config ''
+	if ($updatedConfig)
+		{
+			$config = $updatedConfig
+			Save-RootConfig $config
+			Write-Host "Cleared the active mod group."
+		}
+	else
+		{
+			Write-Host "Could not clear the active mod group."
+		}
+	Write-Host ""
+}
+
 function Show-ModGroupDetail {
 	$config = Get-RootConfig
 	if (!$config) { return $false }
 
 	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
-	$group = Select-ModGroupFromList $groups 'Select a group to view'
+	$catalogSummary = Get-GroupCatalogSummaryFromConfig $config
+	$group = Select-ModGroupFromList $groups 'Select a group to view' $catalogSummary
 	if (!$group) { return $false }
 
-	$resolved = Resolve-ModGroupAgainstLibrary $config $group
+	$resolved = Get-GroupDetailFromConfig $config $group.name
+	if (!$resolved)
+		{
+			$resolved = Resolve-ModGroupAgainstLibrary $config $group
+		}
 
 	Write-Host ""
 	Write-Host " Group: $($group.name)"
@@ -3277,11 +4146,11 @@ function Menu {
 			echo " 2) Update mods"
 			echo " 3) Start server"
 			echo " 4) Stop server"
-			echo " 5) Remove / Uninstall"
-			echo " 6) Switch active mod group"
-			echo " 7) Manage mods"
-			echo " 8) Manage mod groups"
-			echo " 9) Configure SteamCMD account"
+			echo " 5) SteamCMD Account"
+			echo " 6) Config Transfer"
+			echo " 7) Manage mod groups"
+			echo " 8) Manage mods"
+			echo " 9) Remove / Uninstall"
 			echo " 10) Exit"
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo ""
@@ -3343,34 +4212,34 @@ function Menu {
 						continue
 					}
 
-					#Purge saved login/path info
+					#Configure SteamCMD account
 					5 {
-						Remove_menu
+						DownloadLogin_menu
 						continue
 					}
 
-					#Switch active mod group
+					#Transfer config import/export
+					#Manage mod groups
 					6 {
-						Select-ActiveModGroupFromPrompt
-						Pause-BeforeMenu
-						continue
-					}
-
-					#Manage mods
-					7 {
-						ModManager_menu
+						ConfigTransfer_menu
 						continue
 					}
 
 					#Manage mod groups
-					8 {
+					7 {
 						ModGroupManager_menu
 						continue
 					}
 
-					#Configure SteamCMD account
+					#Manage mods
+					8 {
+						ModManager_menu
+						continue
+					}
+
+					#Purge saved login/path info
 					9 {
-						DownloadLogin_menu
+						Remove_menu
 						continue
 					}
 
@@ -4821,6 +5690,11 @@ function MainMenu {
 #Open Main menu if launch parameters are not used
 if (!$script:ServerManagerSkipAutoRun)
 	{
+		if (-not (Test-HybridPythonPrerequisite))
+			{
+				exit 1
+			}
+
 		Initialize-ConfigFiles
 
 		if (($u -eq "") -and ($update -eq "") -and ($s -eq "") -and ($server -eq ""))

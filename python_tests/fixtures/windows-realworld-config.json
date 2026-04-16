@@ -1,0 +1,85 @@
+{
+  "launchParameters": "-config=serverDZ.cfg \"-mod=1559212036;1828439124;3703215741;1750506510;3706391334;\" \"-serverMod=3705672649;3703219006;3704607948;\" \"-profiles=D:\\DayZServer\\logs\" -port=2302 -freezecheck -adminlog -dologs",
+  "mods": [
+    {
+      "name": "CF",
+      "workshopId": "1559212036",
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=1559212036"
+    },
+    {
+      "name": "VPP",
+      "workshopId": "1828439124",
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=1828439124"
+    },
+    {
+      "name": "1.29 Hands Audio Fix",
+      "workshopId": "3703215741",
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3703215741"
+    },
+    {
+      "name": "",
+      "workshopId": "1602372402",
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=1602372402"
+    },
+    {
+      "name": "DeerIsle Official (Experimental - Dev Build)",
+      "workshopId": "1750506510",
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=1750506510"
+    },
+    {
+      "name": "Deerisle 6.0 - End Game Patches",
+      "workshopId": "3706391334",
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3706391334"
+    }
+  ],
+  "serverMods": [
+    {
+      "name": "Smokey Movement Fix",
+      "workshopId": "3705672649",
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3705672649"
+    },
+    {
+      "name": "1.29 Container Persist Fix",
+      "workshopId": "3703219006",
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3703219006"
+    },
+    {
+      "name": "Disable Deerisle Airdrop",
+      "workshopId": "3704607948",
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3704607948"
+    }
+  ],
+  "modGroups": [
+    {
+      "name": "Deerisle 6.0",
+      "mods": [
+        "1559212036",
+        "1828439124",
+        "3703215741",
+        "1750506510",
+        "3706391334"
+      ],
+      "serverMods": [
+        "3705672649",
+        "3703219006",
+        "3704607948"
+      ],
+      "mission": "empty.60.deerisle"
+    },
+    {
+      "name": "Deerisle 5.9",
+      "mods": [
+        "1559212036",
+        "1828439124",
+        "3703215741",
+        "1602372402"
+      ],
+      "serverMods": [
+        "3705672649",
+        "3703219006"
+      ],
+      "mission": "empty.59.deerisle"
+    }
+  ],
+  "activeGroup": "Deerisle 6.0"
+}

@@ -28,6 +28,16 @@ It is tested on Ubuntu 24.04 x86_64 and is expected to work on similar Debian-ba
 
 It is systemd-first: the menu routes start, stop, restart, status, and reload actions through `systemctl`, and the DayZ server runs as a background service instead of a foreground shell process.
 
+## Hybrid Architecture
+
+The manager now uses a balanced hybrid design:
+
+- Windows PowerShell and Linux bash remain the user-facing entrypoints.
+- Shared cross-platform config, launch, and mod-group logic lives in the Python core under `dayz_manager/`.
+- Platform-specific startup, credential handling, and service/process integration stay in the native wrappers.
+
+This keeps the terminal-first workflow intact while removing most duplicated business logic between Windows and Linux.
+
 Linux mod management now stores mod metadata locally. When you add a mod from the Linux menu, you provide a required title once, and the manager keeps that title plus the Workshop URL without making extra Workshop page requests.
 
 ## New: Mod Groups
@@ -45,32 +55,45 @@ Mod groups let you save multiple named mod profiles and swap them in seconds.
 - Windows 10, Windows Server 2012 R2, or newer
 - SteamCMD
 - A Steam account that owns DayZ for server and Workshop downloads
+- Python 3 on the host
 
-## Main Files
+The wrappers now run a dependency preflight on every launch. If Python 3 is missing, startup stops and prints the one-line install command for the detected platform package manager.
 
-- `windows/Server_manager.ps1`: Windows main script
-- `windows/server-manager.config.json`: local Windows config stored next to the script and kept out of git
-- `windows/Start_Server_Manager.cmd`: Windows double-click launcher for File Explorer use
-- `linux/server_manager_linux.sh`: Linux interactive entrypoint
-- `linux/lib/linux_manager.sh`: Linux helper library
-- `linux/templates/dayz-server.service.template`: systemd unit template
-- `STEAMCMD-CREDENTIALS.md`: explains how SteamCMD credentials are stored and passed to SteamCMD
+## Repository Layout
+
+- `windows/`: Windows entrypoints and launcher
+- `linux/`: Linux entrypoint, helper library, and systemd template
+- `dayz_manager/`: shared Python backend used by both wrappers
+- `python_tests/`: shared regression suite for the hybrid core and wrapper helpers
+- `STEAMCMD-CREDENTIALS.md`: SteamCMD credential handling details
 
 ## Configuration
 
-The manager uses two JSON files.
+The manager uses a canonical per-user config plus a per-user state file.
 
 ### Windows Config
 
-Stored locally next to the Windows script:
+Stored in the current Windows user's Documents folder:
 
-`windows/server-manager.config.json`
+`<Documents>\DayZ_Server\server-manager.config.json`
 
 This file contains the persistent manager configuration:
 
 - `launchParameters`
 - `mods`
 - `serverMods`
+- `modGroups`
+- `activeGroup`
+
+Older Windows installs stored `server-manager.config.json` next to `windows/Server_manager.ps1`. On the first upgraded run, that legacy file is copied into the canonical Documents location and renamed to `server-manager.config.json.legacy.bak`.
+
+### Linux Config
+
+Stored in the XDG config location:
+
+`${XDG_CONFIG_HOME:-$HOME/.config}/dayz-server-manager/server-manager.config.json`
+
+This remains the canonical Linux config even if the repo or launcher is moved to a different directory.
 
 ### Saved State
 
@@ -95,6 +118,19 @@ Credentials are never passed on the SteamCMD command line. Instead, they are wri
 
 If Steam Guard is enabled, SteamCMD may require either Steam app confirmation or an email code during sign-in. When Steam Guard uses email, SteamCMD asks for that code in the same console window after the password step.
 
+## Config Transfer
+
+Both wrappers now include a `Config Transfer` submenu for backup and machine moves.
+
+- `Export config` writes a portable JSON envelope with `formatVersion`, `platform`, and sanitized `config` data.
+- `Import config` validates that envelope through the shared Python backend before replacing the canonical config.
+- Before import overwrite, the current canonical config is backed up beside it as `.import.bak`.
+
+Exports intentionally exclude Steam account credentials and runtime state. After import:
+
+- Windows resyncs active-group launch parameters, generated launch strings, and mission side effects.
+- Linux resyncs active-group mission side effects.
+
 ## Usage
 
 ### Interactive Menu
@@ -109,7 +145,7 @@ When you choose `Update server` or `Update mods`, the manager will:
 
 - use the saved SteamCMD account if one is already configured
 - otherwise prompt you to `Use account once` or `Save account securely`
-- let you clear the saved SteamCMD account from `Configure SteamCMD account`
+- let you clear the saved SteamCMD account from `SteamCMD Account`
 
 If SteamCMD sign-in fails, the manager shows guided retry options and marks the main menu status as `Last sign-in failed` until the login is corrected.
 
@@ -136,7 +172,7 @@ Update the experimental server:
 .\windows\Server_manager.ps1 -update server -app exp
 ```
 
-Update both server and mods and start with the configured `launchParameters` value from `windows/server-manager.config.json`:
+Update both server and mods and start with the configured `launchParameters` value from the canonical Windows config:
 
 ```powershell
 .\windows\Server_manager.ps1 -u all -s start -lp user
