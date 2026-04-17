@@ -60,3 +60,46 @@ def extract_release_zip(zip_path: Path, staging_dir: Path) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(member, "r") as source, target.open("wb") as sink:
                 shutil.copyfileobj(source, sink)
+
+
+_RESERVED_DIRS = frozenset({".git", ".update-backup", ".update-staging"})
+
+
+def _iter_relative_files(root: Path):
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if rel.parts and rel.parts[0] in _RESERVED_DIRS:
+            continue
+        yield rel
+
+
+def apply_staged_update(repo_root: Path, staging_dir: Path, backup_dir: Path) -> int:
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    backup_dir.mkdir(parents=True)
+
+    applied = 0
+    for rel in _iter_relative_files(staging_dir):
+        target = repo_root / rel
+        if target.exists():
+            backup_target = backup_dir / rel
+            backup_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, backup_target)
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(staging_dir / rel, target)
+        applied += 1
+
+    return applied
+
+
+def rollback_update(repo_root: Path, backup_dir: Path) -> None:
+    if not backup_dir.is_dir():
+        return
+    for rel in _iter_relative_files(backup_dir):
+        target = repo_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(backup_dir / rel, target)
+    shutil.rmtree(backup_dir)

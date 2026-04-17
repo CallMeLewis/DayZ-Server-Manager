@@ -71,5 +71,82 @@ class ExtractReleaseZipTests(unittest.TestCase):
                 extract_release_zip(zip_path, staging)
 
 
+from dayz_manager.update_apply import apply_staged_update, rollback_update
+
+
+class ApplyStagedUpdateTests(unittest.TestCase):
+    def _populate_staging(self, staging: Path) -> None:
+        (staging / "windows").mkdir(parents=True)
+        (staging / "linux" / "lib").mkdir(parents=True)
+        (staging / "README.md").write_text("new readme")
+        (staging / "windows" / "Server_manager.ps1").write_text("new ps1")
+        (staging / "linux" / "lib" / "linux_manager.sh").write_text("new bash")
+        (staging / "NEWFILE.txt").write_text("brand new")
+
+    def _populate_repo(self, repo: Path) -> None:
+        (repo / "windows").mkdir(parents=True)
+        (repo / "linux" / "lib").mkdir(parents=True)
+        (repo / "README.md").write_text("old readme")
+        (repo / "windows" / "Server_manager.ps1").write_text("old ps1")
+        (repo / "linux" / "lib" / "linux_manager.sh").write_text("old bash")
+        (repo / "local-untracked.txt").write_text("user-local")
+
+    def test_overwrites_existing_creates_new_and_backs_up_overwritten(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            staging = Path(tmp) / "staging"
+            backup = repo / ".update-backup"
+            self._populate_repo(repo)
+            self._populate_staging(staging)
+
+            count = apply_staged_update(repo, staging, backup)
+
+            self.assertEqual(count, 4)
+            self.assertEqual((repo / "README.md").read_text(), "new readme")
+            self.assertEqual((repo / "windows" / "Server_manager.ps1").read_text(), "new ps1")
+            self.assertEqual((repo / "linux" / "lib" / "linux_manager.sh").read_text(), "new bash")
+            self.assertEqual((repo / "NEWFILE.txt").read_text(), "brand new")
+            self.assertEqual((repo / "local-untracked.txt").read_text(), "user-local")
+
+            self.assertEqual((backup / "README.md").read_text(), "old readme")
+            self.assertEqual((backup / "windows" / "Server_manager.ps1").read_text(), "old ps1")
+            self.assertFalse((backup / "NEWFILE.txt").exists())
+
+    def test_skips_reserved_directories(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            staging = Path(tmp) / "staging"
+            (repo / ".git").mkdir(parents=True)
+            (repo / ".git" / "HEAD").write_text("ref: refs/heads/main")
+            (staging / ".git").mkdir(parents=True)
+            (staging / ".git" / "HEAD").write_text("SHOULD NOT BE APPLIED")
+            (staging / "README.md").write_text("new")
+
+            apply_staged_update(repo, staging, repo / ".update-backup")
+
+            self.assertEqual((repo / ".git" / "HEAD").read_text(), "ref: refs/heads/main")
+            self.assertEqual((repo / "README.md").read_text(), "new")
+
+
+class RollbackUpdateTests(unittest.TestCase):
+    def test_restores_backed_up_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            backup = repo / ".update-backup"
+            (repo / "windows").mkdir(parents=True)
+            backup_sub = backup / "windows"
+            backup_sub.mkdir(parents=True)
+            (repo / "README.md").write_text("bad-new")
+            (repo / "windows" / "Server_manager.ps1").write_text("bad-new-ps1")
+            (backup / "README.md").write_text("good-old")
+            (backup_sub / "Server_manager.ps1").write_text("good-old-ps1")
+
+            rollback_update(repo, backup)
+
+            self.assertEqual((repo / "README.md").read_text(), "good-old")
+            self.assertEqual((repo / "windows" / "Server_manager.ps1").read_text(), "good-old-ps1")
+            self.assertFalse(backup.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
