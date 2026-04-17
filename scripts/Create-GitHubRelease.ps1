@@ -170,8 +170,8 @@ if ($PSCmdlet.ShouldProcess($linuxZip, "Create Linux archive")) {
     New-ReleaseArchive -SourcePaths $linuxSources -DestinationPath $linuxZip
 }
 
-$windowsAsset = '{0}#Windows x64' -f $windowsZip
-$linuxAsset = '{0}#Linux x64' -f $linuxZip
+$windowsAsset = $windowsZip
+$linuxAsset = $linuxZip
 
 if ($PSCmdlet.ShouldProcess($Tag, 'Create or update GitHub release assets')) {
     if (Test-ReleaseExists -ReleaseTag $Tag) {
