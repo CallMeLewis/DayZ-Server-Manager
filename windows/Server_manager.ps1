@@ -174,11 +174,35 @@ function Get-MainMenuTitle {
 	return "DayZ Server Manager v$script:serverManagerVersion"
 }
 
+function Test-HybridPythonExecutable {
+	param(
+		[Parameter(Mandatory = $true)][string] $Command,
+		[string[]] $PrefixArgs = @()
+	)
+
+	if (-not (Get-Command $Command -ErrorAction SilentlyContinue))
+		{
+			return $false
+		}
+
+	try
+		{
+			$invokeArgs = @($PrefixArgs) + @('-c', "import sys; sys.stdout.write('DZSM_PYOK')")
+			$output = & $Command @invokeArgs 2>$null
+			$text = ([string]::Join('', @($output))).Trim()
+			return ($LASTEXITCODE -eq 0 -and $text -eq 'DZSM_PYOK')
+		}
+	catch
+		{
+			return $false
+		}
+}
+
 function Get-HybridPythonCommandSpec {
 	$override = [string] $env:DAYZ_SERVER_MANAGER_PYTHON
 	if (-not [string]::IsNullOrWhiteSpace($override))
 		{
-			if (Get-Command $override -ErrorAction SilentlyContinue)
+			if (Test-HybridPythonExecutable -Command $override)
 				{
 					return [pscustomobject]@{
 						Command    = $override
@@ -195,7 +219,7 @@ function Get-HybridPythonCommandSpec {
 		[pscustomobject]@{ Command = 'py'; PrefixArgs = @('-3') }
 	))
 		{
-			if (Get-Command $candidate.Command -ErrorAction SilentlyContinue)
+			if (Test-HybridPythonExecutable -Command $candidate.Command -PrefixArgs $candidate.PrefixArgs)
 				{
 					return $candidate
 				}
