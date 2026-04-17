@@ -25,7 +25,7 @@ I am not claiming authorship of the original server manager script. This project
 
 The Linux rewrite uses `linux/server_manager_linux.sh` as the interactive entrypoint.
 
-It is tested on Ubuntu 24.04 x86_64 and is expected to work on similar Debian-based x86_64 systems.
+It is tested on Ubuntu 24.04 and is expected to work on similar Debian-based x86_64 systems.
 
 It is systemd-first: the menu routes start, stop, restart, status, and reload actions through `systemctl`, and the DayZ server runs as a background service instead of a foreground shell process.
 
@@ -38,8 +38,6 @@ The manager now uses a balanced hybrid design:
 - Platform-specific startup, credential handling, and service/process integration stay in the native wrappers.
 
 This keeps the terminal-first workflow intact while removing most duplicated business logic between Windows and Linux.
-
-Linux mod management now stores mod metadata locally. When you add a mod from the Linux menu, you provide a required title once, and the manager keeps that title plus the Workshop URL without making extra Workshop page requests.
 
 ## New: Mod Groups
 
