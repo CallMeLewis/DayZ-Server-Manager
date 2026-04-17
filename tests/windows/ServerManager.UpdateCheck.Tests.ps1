@@ -187,3 +187,33 @@ Describe 'Format-UpdateCheckIndicator' {
         Format-UpdateCheckIndicator '1.1.0' '' | Should Be ''
     }
 }
+
+Describe 'Test-UpdateApplyAvailable' {
+    It 'returns false when cached latest is empty' {
+        $state = New-DefaultStateConfig
+        Test-UpdateApplyAvailable $state '1.1.0' | Should Be $false
+    }
+
+    It 'returns true when cached latest is newer than current and tag is set' {
+        $state = New-DefaultStateConfig
+        $state.updateCheck.latestVersion = '1.2.0'
+        $state.updateCheck.latestTag = 'v1.2.0'
+        Test-UpdateApplyAvailable $state '1.1.0' | Should Be $true
+    }
+
+    It 'returns false when current is already at latest' {
+        $state = New-DefaultStateConfig
+        $state.updateCheck.latestVersion = '1.2.0'
+        $state.updateCheck.latestTag = 'v1.2.0'
+        Test-UpdateApplyAvailable $state '1.2.0' | Should Be $false
+    }
+}
+
+Describe 'Format-UpdateApplyConfirmPrompt' {
+    It 'includes current, target version, and warns about restart' {
+        $line = Format-UpdateApplyConfirmPrompt '1.1.0' '1.2.0'
+        $line | Should Match '1\.1\.0'
+        $line | Should Match '1\.2\.0'
+        $line | Should Match 'restart'
+    }
+}

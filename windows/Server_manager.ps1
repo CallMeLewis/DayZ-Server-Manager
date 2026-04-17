@@ -1217,6 +1217,70 @@ function Invoke-UpdateCheckStartup {
 		}
 }
 
+function Test-UpdateApplyAvailable {
+	param($State, [string] $CurrentVersion)
+
+	if (-not $State -or -not $State.updateCheck) { return $false }
+	$tag = [string] $State.updateCheck.latestTag
+	$latest = [string] $State.updateCheck.latestVersion
+	if ([string]::IsNullOrWhiteSpace($tag) -or [string]::IsNullOrWhiteSpace($latest)) { return $false }
+
+	$cmp = Compare-UpdateCheckVersion $CurrentVersion $latest
+	if ($null -eq $cmp) { return $false }
+	return ($cmp -lt 0)
+}
+
+function Format-UpdateApplyConfirmPrompt {
+	param([string] $CurrentVersion, [string] $LatestVersion)
+	return "Install v$LatestVersion (current v$CurrentVersion)? You will need to restart after apply. [y/N]"
+}
+
+function Invoke-UpdateApply {
+	$state = Get-StateConfig
+	if (-not (Test-UpdateApplyAvailable $state $script:serverManagerVersion))
+		{
+			Write-Host 'No update available to install.'
+			return
+		}
+
+	$tag = [string] $state.updateCheck.latestTag
+	$latest = [string] $state.updateCheck.latestVersion
+
+	Write-Host (Format-UpdateApplyConfirmPrompt $script:serverManagerVersion $latest)
+	$answer = Read-Host
+	if ($answer -notmatch '^(y|yes)$')
+		{
+			Write-Host 'Update cancelled.'
+			return
+		}
+
+	$repoRoot = Split-Path $PSScriptRoot -Parent
+	$raw = Invoke-HybridPythonCore @('apply-update', '--tag', $tag, '--repo-root', $repoRoot, '--timeout', '60')
+	if ([string]::IsNullOrWhiteSpace($raw))
+		{
+			Write-Host 'Update failed: the Python backend returned no output.' -ForegroundColor Red
+			return
+		}
+
+	try
+		{
+			$result = $raw | ConvertFrom-Json
+		}
+	catch
+		{
+			Write-Host "Update failed: could not parse backend response." -ForegroundColor Red
+			return
+		}
+
+	if ($result.success)
+		{
+			Write-Host ("Update applied ({0} files). Please restart the manager." -f $result.appliedFiles) -ForegroundColor Green
+			exit 0
+		}
+
+	Write-Host ("Update failed: {0}" -f $result.error) -ForegroundColor Red
+}
+
 function Invoke-HybridPythonCoreWithInput {
 	param(
 		[string[]] $Arguments,
@@ -5870,14 +5934,36 @@ function MainMenu {
 					Write-Host ''
 				}
 
+			$showInstall = Test-UpdateApplyAvailable $state $script:serverManagerVersion
+
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo " 1) Stable server"
 			echo " 2) Experimental server"
-			echo " 3) Exit"
+			if ($showInstall)
+				{
+					echo " 3) Install available update"
+					echo " 4) Exit"
+				}
+			else
+				{
+					echo " 3) Exit"
+				}
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo ""
 
 			$select = Read-Host -Prompt 'Select an option'
+
+			if ($showInstall -and $select -eq '3')
+				{
+					Invoke-UpdateApply
+					continue
+				}
+
+			$exitOption = if ($showInstall) { '4' } else { '3' }
+			if ($select -eq $exitOption)
+				{
+					exit 0
+				}
 
 			switch ($select)
 				{
@@ -5897,15 +5983,11 @@ function MainMenu {
 						continue
 					}
 
-					#Close script
-					3 {
-						exit 0
-					}
-
 					#Force user to select one of provided options
 					Default {
+						$maxOption = if ($showInstall) { '4' } else { '3' }
 						echo "`n"
-						echo "Select a number from the list (1-3)."
+						echo "Select a number from the list (1-$maxOption)."
 						echo "`n"
 
 						Pause-BeforeMenu
