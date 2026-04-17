@@ -1006,7 +1006,279 @@ function New-DefaultStateConfig {
 			serverMod = ''
 		}
 		trackedServers = @()
+		updateCheck = [pscustomobject]@{
+			latestVersion = ''
+			latestTag = ''
+			releaseUrl = ''
+			checkedAt = ''
+			lastAcknowledgedVersion = ''
+		}
 	}
+}
+
+function Test-UpdateCheckCacheFresh {
+	param(
+		$UpdateCheck,
+		[datetime] $Now
+	)
+
+	if (-not $UpdateCheck)
+		{
+			return $false
+		}
+
+	$checkedAt = [string] $UpdateCheck.checkedAt
+	if ([string]::IsNullOrWhiteSpace($checkedAt))
+		{
+			return $false
+		}
+
+	$parsed = [datetime]::new(0)
+	if (-not [datetime]::TryParse($checkedAt, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal, [ref] $parsed))
+		{
+			return $false
+		}
+
+	$age = ($Now.ToUniversalTime() - $parsed)
+	return ($age.TotalHours -lt 6)
+}
+
+function Compare-UpdateCheckVersion {
+	param(
+		[string] $Left,
+		[string] $Right
+	)
+
+	$pattern = '^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$'
+	$leftMatch = [regex]::Match($Left, $pattern)
+	$rightMatch = [regex]::Match($Right, $pattern)
+	if (-not $leftMatch.Success -or -not $rightMatch.Success)
+		{
+			return $null
+		}
+
+	for ($i = 1; $i -le 3; $i++)
+		{
+			$leftPart = [int] $leftMatch.Groups[$i].Value
+			$rightPart = [int] $rightMatch.Groups[$i].Value
+			if ($leftPart -lt $rightPart) { return -1 }
+			if ($leftPart -gt $rightPart) { return 1 }
+		}
+
+	return 0
+}
+
+function Test-UpdateCheckShouldNotify {
+	param($UpdateCheck, [string] $CurrentVersion)
+
+	if (-not $UpdateCheck) { return $false }
+	$latest = [string] $UpdateCheck.latestVersion
+	if ([string]::IsNullOrWhiteSpace($latest)) { return $false }
+
+	$cmp = Compare-UpdateCheckVersion $CurrentVersion $latest
+	if ($null -eq $cmp) { return $false }
+	if ($cmp -ge 0) { return $false }
+
+	return ([string] $UpdateCheck.lastAcknowledgedVersion -ne $latest)
+}
+
+function Test-UpdateCheckShouldShowIndicator {
+	param($UpdateCheck, [string] $CurrentVersion)
+
+	if (-not $UpdateCheck) { return $false }
+	$latest = [string] $UpdateCheck.latestVersion
+	if ([string]::IsNullOrWhiteSpace($latest)) { return $false }
+
+	$cmp = Compare-UpdateCheckVersion $CurrentVersion $latest
+	if ($null -eq $cmp) { return $false }
+	return ($cmp -lt 0)
+}
+
+function Set-UpdateCheckAcknowledged {
+	param($State, [string] $Version)
+
+	if (-not $State) { return }
+	if (-not $State.updateCheck) { return }
+	$State.updateCheck.lastAcknowledgedVersion = $Version
+}
+
+function Format-UpdateCheckTimestamp {
+	param([datetime] $Value)
+	return $Value.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Merge-UpdateCheckResult {
+	param($State, $Result, [datetime] $Now)
+
+	if (-not $State -or -not $State.updateCheck) { return }
+	if (-not $Result) { return }
+
+	$State.updateCheck.checkedAt = Format-UpdateCheckTimestamp $Now
+
+	if ($Result.error)
+		{
+			return
+		}
+
+	$newLatest = [string] $Result.latestVersion
+	$previousLatest = [string] $State.updateCheck.latestVersion
+
+	$State.updateCheck.latestVersion = $newLatest
+	$State.updateCheck.latestTag = [string] $Result.latestTag
+	$State.updateCheck.releaseUrl = [string] $Result.releaseUrl
+
+	if ($newLatest -ne $previousLatest)
+		{
+			$State.updateCheck.lastAcknowledgedVersion = ''
+		}
+}
+
+function Invoke-UpdateCheckRefresh {
+	param([string] $CurrentVersion)
+
+	$raw = Invoke-HybridPythonCore @('check-update', '--current-version', $CurrentVersion)
+	if ([string]::IsNullOrWhiteSpace($raw))
+		{
+			return $null
+		}
+
+	try
+		{
+			return ($raw | ConvertFrom-Json)
+		}
+	catch
+		{
+			return $null
+		}
+}
+
+function Format-UpdateCheckNoticeLines {
+	param([string] $CurrentVersion, [string] $LatestVersion, [string] $ReleaseUrl)
+
+	$lines = @(
+		'========================================',
+		' DayZ Server Manager - Update Available',
+		'========================================',
+		'',
+		"A new version is available: v$LatestVersion",
+		"You are running: v$CurrentVersion",
+		''
+	)
+
+	if (-not [string]::IsNullOrWhiteSpace($ReleaseUrl))
+		{
+			$lines += "Release notes: $ReleaseUrl"
+			$lines += ''
+		}
+
+	$lines += 'Press Enter to continue...'
+	return $lines
+}
+
+function Format-UpdateCheckIndicator {
+	param([string] $CurrentVersion, [string] $LatestVersion)
+
+	if ([string]::IsNullOrWhiteSpace($LatestVersion)) { return '' }
+	return ('* Update available: v{0} (current v{1})' -f $LatestVersion, $CurrentVersion)
+}
+
+function Show-UpdateCheckNotice {
+	param([string] $CurrentVersion, [string] $LatestVersion, [string] $ReleaseUrl)
+
+	Clear-MenuScreen
+	foreach ($line in (Format-UpdateCheckNoticeLines $CurrentVersion $LatestVersion $ReleaseUrl))
+		{
+			Write-Host $line
+		}
+	$null = Read-Host
+}
+
+function Invoke-UpdateCheckStartup {
+	if (-not (Test-InteractiveMenuMode)) { return }
+
+	$state = Get-StateConfig
+	$now = Get-Date
+
+	if (-not (Test-UpdateCheckCacheFresh $state.updateCheck $now))
+		{
+			$result = Invoke-UpdateCheckRefresh $script:serverManagerVersion
+			if ($result)
+				{
+					Merge-UpdateCheckResult $state $result $now
+					Save-StateConfig $state
+				}
+		}
+
+	if (Test-UpdateCheckShouldNotify $state.updateCheck $script:serverManagerVersion)
+		{
+			Show-UpdateCheckNotice $script:serverManagerVersion $state.updateCheck.latestVersion $state.updateCheck.releaseUrl
+			Set-UpdateCheckAcknowledged $state $state.updateCheck.latestVersion
+			Save-StateConfig $state
+		}
+}
+
+function Test-UpdateApplyAvailable {
+	param($State, [string] $CurrentVersion)
+
+	if (-not $State -or -not $State.updateCheck) { return $false }
+	$tag = [string] $State.updateCheck.latestTag
+	$latest = [string] $State.updateCheck.latestVersion
+	if ([string]::IsNullOrWhiteSpace($tag) -or [string]::IsNullOrWhiteSpace($latest)) { return $false }
+
+	$cmp = Compare-UpdateCheckVersion $CurrentVersion $latest
+	if ($null -eq $cmp) { return $false }
+	return ($cmp -lt 0)
+}
+
+function Format-UpdateApplyConfirmPrompt {
+	param([string] $CurrentVersion, [string] $LatestVersion)
+	return "Install v$LatestVersion (current v$CurrentVersion)? You will need to restart after apply. [y/N]"
+}
+
+function Invoke-UpdateApply {
+	$state = Get-StateConfig
+	if (-not (Test-UpdateApplyAvailable $state $script:serverManagerVersion))
+		{
+			Write-Host 'No update available to install.'
+			return
+		}
+
+	$tag = [string] $state.updateCheck.latestTag
+	$latest = [string] $state.updateCheck.latestVersion
+
+	Write-Host (Format-UpdateApplyConfirmPrompt $script:serverManagerVersion $latest)
+	$answer = Read-Host
+	if ($answer -notmatch '^(y|yes)$')
+		{
+			Write-Host 'Update cancelled.'
+			return
+		}
+
+	$repoRoot = Split-Path $PSScriptRoot -Parent
+	$raw = Invoke-HybridPythonCore @('apply-update', '--tag', $tag, '--repo-root', $repoRoot, '--timeout', '60')
+	if ([string]::IsNullOrWhiteSpace($raw))
+		{
+			Write-Host 'Update failed: the Python backend returned no output.' -ForegroundColor Red
+			return
+		}
+
+	try
+		{
+			$result = $raw | ConvertFrom-Json
+		}
+	catch
+		{
+			Write-Host "Update failed: could not parse backend response." -ForegroundColor Red
+			return
+		}
+
+	if ($result.success)
+		{
+			Write-Host ("Update applied ({0} files). Please restart the manager." -f $result.appliedFiles) -ForegroundColor Green
+			exit 0
+		}
+
+	Write-Host ("Update failed: {0}" -f $result.error) -ForegroundColor Red
 }
 
 function Invoke-HybridPythonCoreWithInput {
@@ -1335,6 +1607,19 @@ function Get-StateConfig {
 	if (-not ($state.PSObject.Properties.Name -contains 'trackedServers'))
 		{
 			$state | Add-Member -NotePropertyName trackedServers -NotePropertyValue @() -Force
+			Save-StateConfig $state
+		}
+
+	# Ensure updateCheck property exists on loaded state.
+	if (-not ($state.PSObject.Properties.Name -contains 'updateCheck'))
+		{
+			$state | Add-Member -NotePropertyName updateCheck -NotePropertyValue ([pscustomobject]@{
+				latestVersion = ''
+				latestTag = ''
+				releaseUrl = ''
+				checkedAt = ''
+				lastAcknowledgedVersion = ''
+			}) -Force
 			Save-StateConfig $state
 		}
 
@@ -5642,14 +5927,43 @@ function MainMenu {
 		{
 			Show-MenuHeader (Get-MainMenuTitle)
 
+			$state = Get-StateConfig
+			if (Test-UpdateCheckShouldShowIndicator $state.updateCheck $script:serverManagerVersion)
+				{
+					Write-Host (Format-UpdateCheckIndicator $script:serverManagerVersion $state.updateCheck.latestVersion) -ForegroundColor Yellow
+					Write-Host ''
+				}
+
+			$showInstall = Test-UpdateApplyAvailable $state $script:serverManagerVersion
+
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo " 1) Stable server"
 			echo " 2) Experimental server"
-			echo " 3) Exit"
+			if ($showInstall)
+				{
+					echo " 3) Install available update"
+					echo " 4) Exit"
+				}
+			else
+				{
+					echo " 3) Exit"
+				}
 			Write-Host " $([string]::new([char]0x2500, 37))"
 			echo ""
 
 			$select = Read-Host -Prompt 'Select an option'
+
+			if ($showInstall -and $select -eq '3')
+				{
+					Invoke-UpdateApply
+					continue
+				}
+
+			$exitOption = if ($showInstall) { '4' } else { '3' }
+			if ($select -eq $exitOption)
+				{
+					exit 0
+				}
 
 			switch ($select)
 				{
@@ -5669,15 +5983,11 @@ function MainMenu {
 						continue
 					}
 
-					#Close script
-					3 {
-						exit 0
-					}
-
 					#Force user to select one of provided options
 					Default {
+						$maxOption = if ($showInstall) { '4' } else { '3' }
 						echo "`n"
-						echo "Select a number from the list (1-3)."
+						echo "Select a number from the list (1-$maxOption)."
 						echo "`n"
 
 						Pause-BeforeMenu
@@ -5696,6 +6006,7 @@ if (!$script:ServerManagerSkipAutoRun)
 			}
 
 		Initialize-ConfigFiles
+		Invoke-UpdateCheckStartup
 
 		if (($u -eq "") -and ($update -eq "") -and ($s -eq "") -and ($server -eq ""))
 			{

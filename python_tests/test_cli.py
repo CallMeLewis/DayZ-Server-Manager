@@ -1479,5 +1479,67 @@ class CliTests(unittest.TestCase):
         self.assertEqual(updated["modLibrary"]["groups"], [])
 
 
+class CheckUpdateCliTests(unittest.TestCase):
+    def test_check_update_subcommand_returns_json_payload(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+        script = "\n".join([
+            "import json, sys",
+            "from unittest.mock import patch",
+            "import dayz_manager.cli as cli",
+            "with patch('dayz_manager.update_check.fetch_latest_release', return_value={'tag': 'v9.9.9', 'url': 'https://example.invalid/v9.9.9'}):",
+            "    sys.argv = ['cli', 'check-update', '--current-version', '1.1.0']",
+            "    cli.main()",
+        ])
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["currentVersion"], "1.1.0")
+        self.assertEqual(payload["latestVersion"], "9.9.9")
+        self.assertTrue(payload["updateAvailable"])
+        self.assertIsNone(payload["error"])
+
+
+class ApplyUpdateCliTests(unittest.TestCase):
+    def test_apply_update_subcommand_returns_json_payload(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+        script = "\n".join([
+            "import json, sys",
+            "from unittest.mock import patch",
+            "import dayz_manager.cli as cli",
+            "def fake_apply_update(**kwargs):",
+            "    return {'success': True, 'tag': kwargs['tag'], 'appliedFiles': 3, 'backupPath': '/tmp/b', 'error': None}",
+            "with patch('dayz_manager.cli.apply_update', side_effect=fake_apply_update):",
+            "    sys.argv = ['cli', 'apply-update', '--tag', 'v1.2.0', '--repo-root', '/tmp/r']",
+            "    sys.exit(cli.main())",
+        ])
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env, check=True)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["tag"], "v1.2.0")
+
+    def test_apply_update_subcommand_exits_non_zero_on_failure(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+        script = "\n".join([
+            "import sys",
+            "from unittest.mock import patch",
+            "import dayz_manager.cli as cli",
+            "def fake_apply_update(**kwargs):",
+            "    return {'success': False, 'tag': kwargs['tag'], 'appliedFiles': 0, 'backupPath': None, 'error': 'boom'}",
+            "with patch('dayz_manager.cli.apply_update', side_effect=fake_apply_update):",
+            "    sys.argv = ['cli', 'apply-update', '--tag', 'v1.2.0', '--repo-root', '/tmp/r']",
+            "    sys.exit(cli.main())",
+        ])
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)
+        self.assertNotEqual(result.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
