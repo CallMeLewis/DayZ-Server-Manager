@@ -108,12 +108,13 @@ function New-ReleaseArchive {
 function Test-ReleaseExists {
     param([Parameter(Mandatory = $true)][string] $ReleaseTag)
 
-    $args = @('release', 'view', $ReleaseTag)
+    $viewArgs = @('release', 'view', $ReleaseTag)
     if ($Repo) {
-        $args += @('--repo', $Repo)
+        $viewArgs += @('--repo', $Repo)
     }
 
-    & gh @args *> $null
+    # Merge stderr into stdout so gh's "release not found" doesn't trip $ErrorActionPreference=Stop.
+    $null = & gh @viewArgs 2>&1
     return $LASTEXITCODE -eq 0
 }
 
