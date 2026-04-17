@@ -49,24 +49,60 @@ function Invoke-GhCommand {
     return $output
 }
 
+function Copy-ReleaseItem {
+    param(
+        [Parameter(Mandatory = $true)][string] $Source,
+        [Parameter(Mandatory = $true)][string] $StagingRoot
+    )
+
+    if (!(Test-Path -LiteralPath $Source)) {
+        throw "Source not found: $Source"
+    }
+
+    $leaf = Split-Path $Source -Leaf
+    $destination = Join-Path $StagingRoot $leaf
+
+    if (Test-Path -LiteralPath $Source -PathType Container) {
+        Copy-Item -LiteralPath $Source -Destination $destination -Recurse -Force
+
+        Get-ChildItem -LiteralPath $destination -Recurse -Directory -Filter '__pycache__' -Force |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+
+        Get-ChildItem -LiteralPath $destination -Recurse -File -Include '*.pyc' -Force |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+    }
+    else {
+        Copy-Item -LiteralPath $Source -Destination $destination -Force
+    }
+}
+
 function New-ReleaseArchive {
     param(
         [Parameter(Mandatory = $true)]
-        [string] $SourcePath,
+        [string[]] $SourcePaths,
 
         [Parameter(Mandatory = $true)]
         [string] $DestinationPath
     )
 
-    if (!(Test-Path -LiteralPath $SourcePath -PathType Container)) {
-        throw "Source folder not found: $SourcePath"
-    }
-
     if (Test-Path -LiteralPath $DestinationPath) {
         Remove-Item -LiteralPath $DestinationPath -Force
     }
 
-    Compress-Archive -LiteralPath $SourcePath -DestinationPath $DestinationPath -CompressionLevel Optimal
+    $stagingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("dayz-release-{0}" -f [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
+
+    try {
+        foreach ($source in $SourcePaths) {
+            Copy-ReleaseItem -Source $source -StagingRoot $stagingRoot
+        }
+
+        $contents = Get-ChildItem -LiteralPath $stagingRoot -Force | ForEach-Object { $_.FullName }
+        Compress-Archive -LiteralPath $contents -DestinationPath $DestinationPath -CompressionLevel Optimal
+    }
+    finally {
+        Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Test-ReleaseExists {
@@ -84,6 +120,9 @@ function Test-ReleaseExists {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $windowsPath = Join-Path $repoRoot 'windows'
 $linuxPath = Join-Path $repoRoot 'linux'
+$dayzManagerPath = Join-Path $repoRoot 'dayz_manager'
+$readmePath = Join-Path $repoRoot 'README.md'
+$steamCredentialsPath = Join-Path $repoRoot 'STEAMCMD-CREDENTIALS.md'
 
 if ([string]::IsNullOrWhiteSpace($ReleaseDir)) {
     $ReleaseDir = Join-Path $repoRoot '.release'
@@ -97,12 +136,10 @@ if (!(Test-CommandExists 'gh')) {
     throw 'GitHub CLI (`gh`) is required but was not found in PATH.'
 }
 
-if (!(Test-Path -LiteralPath $windowsPath -PathType Container)) {
-    throw "Windows folder not found: $windowsPath"
-}
-
-if (!(Test-Path -LiteralPath $linuxPath -PathType Container)) {
-    throw "Linux folder not found: $linuxPath"
+foreach ($required in @($windowsPath, $linuxPath, $dayzManagerPath, $readmePath)) {
+    if (!(Test-Path -LiteralPath $required)) {
+        throw "Required release source not found: $required"
+    }
 }
 
 New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
@@ -110,12 +147,19 @@ New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 $windowsZip = Join-Path $ReleaseDir ("dayz-server-manager-windows-x64-{0}.zip" -f $Tag)
 $linuxZip = Join-Path $ReleaseDir ("dayz-server-manager-linux-x64-{0}.zip" -f $Tag)
 
-if ($PSCmdlet.ShouldProcess($windowsPath, "Create archive $windowsZip")) {
-    New-ReleaseArchive -SourcePath $windowsPath -DestinationPath $windowsZip
+$windowsSources = @($windowsPath, $dayzManagerPath, $readmePath)
+if (Test-Path -LiteralPath $steamCredentialsPath) {
+    $windowsSources += $steamCredentialsPath
 }
 
-if ($PSCmdlet.ShouldProcess($linuxPath, "Create archive $linuxZip")) {
-    New-ReleaseArchive -SourcePath $linuxPath -DestinationPath $linuxZip
+$linuxSources = @($linuxPath, $dayzManagerPath, $readmePath)
+
+if ($PSCmdlet.ShouldProcess($windowsZip, "Create Windows archive")) {
+    New-ReleaseArchive -SourcePaths $windowsSources -DestinationPath $windowsZip
+}
+
+if ($PSCmdlet.ShouldProcess($linuxZip, "Create Linux archive")) {
+    New-ReleaseArchive -SourcePaths $linuxSources -DestinationPath $linuxZip
 }
 
 $windowsAsset = '{0}#Windows x64' -f $windowsZip
