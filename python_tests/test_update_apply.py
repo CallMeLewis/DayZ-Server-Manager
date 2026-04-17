@@ -148,5 +148,58 @@ class RollbackUpdateTests(unittest.TestCase):
             self.assertFalse(backup.exists())
 
 
+from urllib.error import URLError
+
+from dayz_manager.update_apply import apply_update
+
+
+class ApplyUpdateTests(unittest.TestCase):
+    def _prime_staging(self, tag: str):
+        def fake_download(tag_arg, destination, timeout):
+            self.assertEqual(tag_arg, tag)
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as archive:
+                archive.writestr("DayZ-Server-Manager-9.9.9/README.md", "from-zip")
+            destination.write_bytes(buffer.getvalue())
+        return fake_download
+
+    def test_happy_path_returns_success_payload(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            (repo / "README.md").write_text("old")
+
+            with patch("dayz_manager.update_apply.download_release_zip", side_effect=self._prime_staging("v1.2.0")):
+                result = apply_update(tag="v1.2.0", repo_root=repo, timeout=30.0)
+
+            self.assertTrue(result["success"])
+            self.assertEqual(result["tag"], "v1.2.0")
+            self.assertEqual(result["appliedFiles"], 1)
+            self.assertEqual(result["backupPath"], str(repo / ".update-backup"))
+            self.assertIsNone(result["error"])
+            self.assertEqual((repo / "README.md").read_text(), "from-zip")
+            self.assertFalse((repo / ".update-staging").exists())
+
+    def test_download_failure_returns_error_payload(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            (repo / "README.md").write_text("old")
+
+            def boom(tag, destination, timeout):
+                raise URLError("nope")
+
+            with patch("dayz_manager.update_apply.download_release_zip", side_effect=boom):
+                result = apply_update(tag="v1.2.0", repo_root=repo, timeout=30.0)
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["tag"], "v1.2.0")
+            self.assertEqual(result["appliedFiles"], 0)
+            self.assertIsNone(result["backupPath"])
+            self.assertIn("download failed", result["error"])
+            self.assertEqual((repo / "README.md").read_text(), "old")
+            self.assertFalse((repo / ".update-staging").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

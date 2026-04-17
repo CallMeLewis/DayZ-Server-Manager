@@ -16,6 +16,7 @@ from dayz_manager.launch import (
 )
 from dayz_manager.mutations import mutate_group_config
 from dayz_manager.transfer import build_export_envelope, import_config_envelope
+from dayz_manager.update_apply import apply_update
 
 
 def _parse_args() -> argparse.Namespace:
@@ -119,6 +120,11 @@ def _parse_args() -> argparse.Namespace:
     check_update_parser = subparsers.add_parser("check-update")
     check_update_parser.add_argument("--current-version", required=True)
     check_update_parser.add_argument("--timeout", type=float, default=3.0)
+
+    apply_update_parser = subparsers.add_parser("apply-update")
+    apply_update_parser.add_argument("--tag", required=True)
+    apply_update_parser.add_argument("--repo-root", required=True)
+    apply_update_parser.add_argument("--timeout", type=float, default=60.0)
 
     return parser.parse_args()
 
@@ -274,6 +280,11 @@ def main() -> int:
     if args.command == "check-update":
         print(json.dumps(check_update(current_version=args.current_version, timeout=args.timeout)))
         return 0
+
+    if args.command == "apply-update":
+        result = apply_update(tag=args.tag, repo_root=Path(args.repo_root), timeout=args.timeout)
+        print(json.dumps(result))
+        return 0 if result["success"] else 1
 
     raise ValueError(f"unsupported command: {args.command}")
 

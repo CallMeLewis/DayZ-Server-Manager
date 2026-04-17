@@ -103,3 +103,61 @@ def rollback_update(repo_root: Path, backup_dir: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(backup_dir / rel, target)
     shutil.rmtree(backup_dir)
+
+
+def apply_update(tag: str, repo_root: Path, timeout: float) -> dict[str, object]:
+    repo_root = Path(repo_root)
+    staging = repo_root / ".update-staging"
+    backup = repo_root / ".update-backup"
+    zip_path = staging / "release.zip"
+
+    try:
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+
+        try:
+            download_release_zip(tag, zip_path, timeout=timeout)
+        except (URLError, TimeoutError, OSError) as exc:
+            return {
+                "success": False,
+                "tag": tag,
+                "appliedFiles": 0,
+                "backupPath": None,
+                "error": f"download failed: {exc}",
+            }
+
+        extract_dir = staging / "extracted"
+        try:
+            extract_release_zip(zip_path, extract_dir)
+        except (zipfile.BadZipFile, ValueError) as exc:
+            return {
+                "success": False,
+                "tag": tag,
+                "appliedFiles": 0,
+                "backupPath": None,
+                "error": f"extract failed: {exc}",
+            }
+
+        try:
+            applied = apply_staged_update(repo_root, extract_dir, backup)
+        except OSError as exc:
+            rollback_update(repo_root, backup)
+            return {
+                "success": False,
+                "tag": tag,
+                "appliedFiles": 0,
+                "backupPath": None,
+                "error": f"apply failed: {exc}",
+            }
+
+        return {
+            "success": True,
+            "tag": tag,
+            "appliedFiles": applied,
+            "backupPath": str(backup),
+            "error": None,
+        }
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
