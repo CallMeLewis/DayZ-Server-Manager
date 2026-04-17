@@ -19,6 +19,7 @@ I am not claiming authorship of the original server manager script. This project
 - Stop tracked DayZ server processes
 - Manage client and server mod lists from the interactive menu
 - Manage mod groups: named mod profiles you can switch in one step
+- Check for and install manager updates from GitHub
 
 ## Linux Manager
 
@@ -48,6 +49,17 @@ Mod groups let you save multiple named mod profiles and swap them in seconds.
 - Switch the active group from the main menu to instantly rewrite `-mod` and `-serverMod`
 - The first run migrates your current launch parameters into a `Default` group
 - Store a map (mission folder) per group; switching groups updates `template` in `serverDZ.cfg`
+
+## New: Update Check and In-App Install
+
+On launch, the manager checks GitHub for a newer release (3-second timeout, results cached for 6 hours, silent on failure).
+
+- If a newer release exists, a one-time full-screen notice appears. Press Enter to dismiss.
+- A persistent `* Update available: vX.Y.Z` indicator stays on the main menu until you update.
+- An `Install available update` option appears on the main menu. Select it, confirm, and the manager downloads the platform-specific release zip, backs up every file it will overwrite to `.update-backup/`, and swaps in the new files. No git or unzip required.
+- On success you are prompted to restart. If anything fails mid-apply the backed-up files are restored automatically.
+
+Scripted runs (`-u`, `-s` on Windows; non-interactive Linux entrypoints) skip the check entirely.
 
 ## Requirements
 
@@ -206,7 +218,7 @@ On Linux, titled mod entries render as `Title (WorkshopId)` and also show the st
 
 Use `windows/Start_Server_Manager.cmd` to run the Windows manager from File Explorer without opening a terminal first. The launcher keeps the window open after the script exits so the output remains visible.
 
-The launcher now respects your local PowerShell execution policy. If you edit the local copy, you may need to unblock or re-sign it depending on your policy settings.
+The launcher runs `Unblock-File` on `Server_manager.ps1` before invoking it, so `RemoteSigned` execution policy no longer blocks the (unsigned) script after you download a release zip. If your policy is `AllSigned` you will still need to sign the script yourself or relax the policy.
 
 ## References
 
