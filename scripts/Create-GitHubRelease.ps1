@@ -113,8 +113,15 @@ function Test-ReleaseExists {
         $viewArgs += @('--repo', $Repo)
     }
 
-    # Merge stderr into stdout so gh's "release not found" doesn't trip $ErrorActionPreference=Stop.
-    $null = & gh @viewArgs 2>&1
+    # Relax strict ErrorAction so gh's "release not found" stderr doesn't raise a terminating error.
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try {
+        $null = & gh @viewArgs 2>&1
+    }
+    finally {
+        $ErrorActionPreference = $previousEap
+    }
     return $LASTEXITCODE -eq 0
 }
 
