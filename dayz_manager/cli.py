@@ -124,6 +124,7 @@ def _parse_args() -> argparse.Namespace:
     apply_update_parser = subparsers.add_parser("apply-update")
     apply_update_parser.add_argument("--tag", required=True)
     apply_update_parser.add_argument("--repo-root", required=True)
+    apply_update_parser.add_argument("--platform", choices=("windows", "linux"), required=True)
     apply_update_parser.add_argument("--timeout", type=float, default=60.0)
 
     return parser.parse_args()
@@ -282,7 +283,12 @@ def main() -> int:
         return 0
 
     if args.command == "apply-update":
-        result = apply_update(tag=args.tag, repo_root=Path(args.repo_root), timeout=args.timeout)
+        result = apply_update(
+            tag=args.tag,
+            repo_root=Path(args.repo_root),
+            platform=args.platform,
+            timeout=args.timeout,
+        )
         print(json.dumps(result))
         return 0 if result["success"] else 1
 

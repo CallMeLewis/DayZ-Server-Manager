@@ -1279,7 +1279,7 @@ function Invoke-UpdateApply {
 		}
 
 	$repoRoot = Split-Path $PSScriptRoot -Parent
-	$raw = Invoke-HybridPythonCore @('apply-update', '--tag', $tag, '--repo-root', $repoRoot, '--timeout', '60')
+	$raw = Invoke-HybridPythonCore @('apply-update', '--tag', $tag, '--repo-root', $repoRoot, '--platform', 'windows', '--timeout', '60')
 	if ([string]::IsNullOrWhiteSpace($raw))
 		{
 			Write-Host 'Update failed: the Python backend returned no output.' -ForegroundColor Red

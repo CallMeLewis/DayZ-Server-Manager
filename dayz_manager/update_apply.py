@@ -1,41 +1,40 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 
-_ARCHIVE_URL_TEMPLATE = "https://github.com/CallMeLewis/DayZ-Server-Manager/archive/refs/tags/{tag}.zip"
+_ASSET_URL_TEMPLATE = (
+    "https://github.com/CallMeLewis/DayZ-Server-Manager/releases/download/"
+    "{tag}/dayz-server-manager-{platform}-x64-{tag}.zip"
+)
 _USER_AGENT = "dayz-server-manager-apply-update"
+_SUPPORTED_PLATFORMS = frozenset({"windows", "linux"})
 
 
-def build_release_zip_url(tag: str) -> str:
-    return _ARCHIVE_URL_TEMPLATE.format(tag=tag)
+def _normalize_platform(platform: str) -> str:
+    normalized = (platform or "").strip().lower()
+    if normalized not in _SUPPORTED_PLATFORMS:
+        raise ValueError(f"unsupported platform: {platform!r}")
+    return normalized
 
 
-def download_release_zip(tag: str, destination: Path, timeout: float) -> None:
+def build_release_zip_url(tag: str, platform: str) -> str:
+    return _ASSET_URL_TEMPLATE.format(tag=tag, platform=_normalize_platform(platform))
+
+
+def download_release_zip(tag: str, platform: str, destination: Path, timeout: float) -> None:
     request = Request(
-        build_release_zip_url(tag),
+        build_release_zip_url(tag, platform),
         headers={"User-Agent": _USER_AGENT, "Accept": "application/zip"},
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     with urlopen(request, timeout=timeout) as response, destination.open("wb") as out:
         shutil.copyfileobj(response, out)
-
-
-def _common_top_level(names: list[str]) -> str:
-    roots = set()
-    for name in names:
-        if not name:
-            continue
-        head = name.split("/", 1)[0]
-        if head:
-            roots.add(head)
-    if len(roots) != 1:
-        raise ValueError(f"expected a single top-level directory in zip, found: {sorted(roots)}")
-    return next(iter(roots))
 
 
 def extract_release_zip(zip_path: Path, staging_dir: Path) -> None:
@@ -44,18 +43,12 @@ def extract_release_zip(zip_path: Path, staging_dir: Path) -> None:
     staging_dir.mkdir(parents=True)
 
     with zipfile.ZipFile(zip_path, "r") as archive:
-        names = [name for name in archive.namelist() if name and not name.endswith("/")]
-        top_level = _common_top_level(names)
-        prefix = top_level + "/"
-
         for member in archive.infolist():
             if member.is_dir():
                 continue
-            if not member.filename.startswith(prefix):
-                raise ValueError(f"unexpected zip entry outside {top_level!r}: {member.filename}")
-            relative = member.filename[len(prefix):]
-            if not relative:
-                continue
+            relative = member.filename
+            if not relative or relative.startswith("/") or ".." in Path(relative).parts:
+                raise ValueError(f"unsafe zip entry: {member.filename}")
             target = staging_dir / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(member, "r") as source, target.open("wb") as sink:
@@ -105,19 +98,28 @@ def rollback_update(repo_root: Path, backup_dir: Path) -> None:
     shutil.rmtree(backup_dir)
 
 
-def apply_update(tag: str, repo_root: Path, timeout: float) -> dict[str, object]:
+def apply_update(tag: str, repo_root: Path, platform: str, timeout: float) -> dict[str, object]:
     repo_root = Path(repo_root)
-    staging = repo_root / ".update-staging"
     backup = repo_root / ".update-backup"
-    zip_path = staging / "release.zip"
 
     try:
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True)
+        _normalize_platform(platform)
+    except ValueError as exc:
+        return {
+            "success": False,
+            "tag": tag,
+            "appliedFiles": 0,
+            "backupPath": None,
+            "error": str(exc),
+        }
+
+    with tempfile.TemporaryDirectory(prefix="dayz-update-", ignore_cleanup_errors=True) as staging_str:
+        staging = Path(staging_str)
+        zip_path = staging / "release.zip"
+        extract_dir = staging / "extracted"
 
         try:
-            download_release_zip(tag, zip_path, timeout=timeout)
+            download_release_zip(tag, platform, zip_path, timeout=timeout)
         except (URLError, TimeoutError, OSError) as exc:
             return {
                 "success": False,
@@ -127,7 +129,6 @@ def apply_update(tag: str, repo_root: Path, timeout: float) -> dict[str, object]
                 "error": f"download failed: {exc}",
             }
 
-        extract_dir = staging / "extracted"
         try:
             extract_release_zip(zip_path, extract_dir)
         except (zipfile.BadZipFile, ValueError) as exc:
@@ -158,6 +159,3 @@ def apply_update(tag: str, repo_root: Path, timeout: float) -> dict[str, object]
             "backupPath": str(backup),
             "error": None,
         }
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)

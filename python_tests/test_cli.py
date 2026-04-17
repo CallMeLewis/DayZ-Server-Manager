@@ -1516,7 +1516,7 @@ class ApplyUpdateCliTests(unittest.TestCase):
             "def fake_apply_update(**kwargs):",
             "    return {'success': True, 'tag': kwargs['tag'], 'appliedFiles': 3, 'backupPath': '/tmp/b', 'error': None}",
             "with patch('dayz_manager.cli.apply_update', side_effect=fake_apply_update):",
-            "    sys.argv = ['cli', 'apply-update', '--tag', 'v1.2.0', '--repo-root', '/tmp/r']",
+            "    sys.argv = ['cli', 'apply-update', '--tag', 'v1.2.0', '--repo-root', '/tmp/r', '--platform', 'windows']",
             "    sys.exit(cli.main())",
         ])
         result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env, check=True)
@@ -1534,7 +1534,7 @@ class ApplyUpdateCliTests(unittest.TestCase):
             "def fake_apply_update(**kwargs):",
             "    return {'success': False, 'tag': kwargs['tag'], 'appliedFiles': 0, 'backupPath': None, 'error': 'boom'}",
             "with patch('dayz_manager.cli.apply_update', side_effect=fake_apply_update):",
-            "    sys.argv = ['cli', 'apply-update', '--tag', 'v1.2.0', '--repo-root', '/tmp/r']",
+            "    sys.argv = ['cli', 'apply-update', '--tag', 'v1.2.0', '--repo-root', '/tmp/r', '--platform', 'windows']",
             "    sys.exit(cli.main())",
         ])
         result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)

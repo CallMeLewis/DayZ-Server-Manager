@@ -16,21 +16,34 @@ def _fake_http_response(body: bytes) -> io.BytesIO:
     return io.BytesIO(body)
 
 
-def _build_fixture_zip() -> bytes:
+def _build_asset_zip() -> bytes:
+    """Mirrors the shape of the curated release asset zip (files at root, no prefix)."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("DayZ-Server-Manager-9.9.9/README.md", "hello")
-        archive.writestr("DayZ-Server-Manager-9.9.9/windows/Server_manager.ps1", "ps1 body")
-        archive.writestr("DayZ-Server-Manager-9.9.9/linux/lib/linux_manager.sh", "bash body")
+        archive.writestr("README.md", "hello")
+        archive.writestr("windows/Server_manager.ps1", "ps1 body")
+        archive.writestr("dayz_manager/__init__.py", "")
     return buffer.getvalue()
 
 
 class BuildReleaseZipUrlTests(unittest.TestCase):
-    def test_constructs_github_archive_url(self) -> None:
+    def test_constructs_windows_asset_url(self) -> None:
         self.assertEqual(
-            build_release_zip_url("v1.2.0"),
-            "https://github.com/CallMeLewis/DayZ-Server-Manager/archive/refs/tags/v1.2.0.zip",
+            build_release_zip_url("v1.2.0", "windows"),
+            "https://github.com/CallMeLewis/DayZ-Server-Manager/releases/download/"
+            "v1.2.0/dayz-server-manager-windows-x64-v1.2.0.zip",
         )
+
+    def test_constructs_linux_asset_url(self) -> None:
+        self.assertEqual(
+            build_release_zip_url("v1.2.0", "linux"),
+            "https://github.com/CallMeLewis/DayZ-Server-Manager/releases/download/"
+            "v1.2.0/dayz-server-manager-linux-x64-v1.2.0.zip",
+        )
+
+    def test_rejects_unknown_platform(self) -> None:
+        with self.assertRaises(ValueError):
+            build_release_zip_url("v1.2.0", "mac")
 
 
 class DownloadReleaseZipTests(unittest.TestCase):
@@ -39,13 +52,13 @@ class DownloadReleaseZipTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             destination = Path(tmp) / "release.zip"
             with patch("dayz_manager.update_apply.urlopen", return_value=_fake_http_response(body)):
-                download_release_zip("v1.2.0", destination, timeout=30.0)
+                download_release_zip("v1.2.0", "windows", destination, timeout=30.0)
             self.assertEqual(destination.read_bytes(), body)
 
 
 class ExtractReleaseZipTests(unittest.TestCase):
-    def test_strips_top_level_prefix(self) -> None:
-        zip_bytes = _build_fixture_zip()
+    def test_extracts_asset_zip_files_at_root(self) -> None:
+        zip_bytes = _build_asset_zip()
         with TemporaryDirectory() as tmp:
             zip_path = Path(tmp) / "release.zip"
             zip_path.write_bytes(zip_bytes)
@@ -55,14 +68,12 @@ class ExtractReleaseZipTests(unittest.TestCase):
             self.assertTrue((staging / "README.md").exists())
             self.assertEqual((staging / "README.md").read_text(), "hello")
             self.assertTrue((staging / "windows" / "Server_manager.ps1").exists())
-            self.assertTrue((staging / "linux" / "lib" / "linux_manager.sh").exists())
-            self.assertFalse((staging / "DayZ-Server-Manager-9.9.9").exists())
+            self.assertTrue((staging / "dayz_manager" / "__init__.py").exists())
 
-    def test_rejects_zip_without_single_top_level_prefix(self) -> None:
+    def test_rejects_zip_with_parent_traversal(self) -> None:
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:
-            archive.writestr("README.md", "x")
-            archive.writestr("other-root/file.txt", "y")
+            archive.writestr("../evil.txt", "no")
         with TemporaryDirectory() as tmp:
             zip_path = Path(tmp) / "bad.zip"
             zip_path.write_bytes(buffer.getvalue())
@@ -154,12 +165,13 @@ from dayz_manager.update_apply import apply_update
 
 
 class ApplyUpdateTests(unittest.TestCase):
-    def _prime_staging(self, tag: str):
-        def fake_download(tag_arg, destination, timeout):
+    def _prime_staging(self, tag: str, expected_platform: str):
+        def fake_download(tag_arg, platform_arg, destination, timeout):
             self.assertEqual(tag_arg, tag)
+            self.assertEqual(platform_arg, expected_platform)
             buffer = io.BytesIO()
             with zipfile.ZipFile(buffer, "w") as archive:
-                archive.writestr("DayZ-Server-Manager-9.9.9/README.md", "from-zip")
+                archive.writestr("README.md", "from-zip")
             destination.write_bytes(buffer.getvalue())
         return fake_download
 
@@ -169,8 +181,8 @@ class ApplyUpdateTests(unittest.TestCase):
             repo.mkdir()
             (repo / "README.md").write_text("old")
 
-            with patch("dayz_manager.update_apply.download_release_zip", side_effect=self._prime_staging("v1.2.0")):
-                result = apply_update(tag="v1.2.0", repo_root=repo, timeout=30.0)
+            with patch("dayz_manager.update_apply.download_release_zip", side_effect=self._prime_staging("v1.2.0", "windows")):
+                result = apply_update(tag="v1.2.0", repo_root=repo, platform="windows", timeout=30.0)
 
             self.assertTrue(result["success"])
             self.assertEqual(result["tag"], "v1.2.0")
@@ -186,11 +198,11 @@ class ApplyUpdateTests(unittest.TestCase):
             repo.mkdir()
             (repo / "README.md").write_text("old")
 
-            def boom(tag, destination, timeout):
+            def boom(tag, platform, destination, timeout):
                 raise URLError("nope")
 
             with patch("dayz_manager.update_apply.download_release_zip", side_effect=boom):
-                result = apply_update(tag="v1.2.0", repo_root=repo, timeout=30.0)
+                result = apply_update(tag="v1.2.0", repo_root=repo, platform="linux", timeout=30.0)
 
             self.assertFalse(result["success"])
             self.assertEqual(result["tag"], "v1.2.0")
@@ -199,6 +211,14 @@ class ApplyUpdateTests(unittest.TestCase):
             self.assertIn("download failed", result["error"])
             self.assertEqual((repo / "README.md").read_text(), "old")
             self.assertFalse((repo / ".update-staging").exists())
+
+    def test_rejects_unknown_platform(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            result = apply_update(tag="v1.2.0", repo_root=repo, platform="mac", timeout=30.0)
+            self.assertFalse(result["success"])
+            self.assertIn("unsupported platform", result["error"])
 
 
 if __name__ == "__main__":
