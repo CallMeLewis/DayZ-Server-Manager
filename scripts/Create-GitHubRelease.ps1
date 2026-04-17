@@ -68,7 +68,7 @@ function Copy-ReleaseItem {
         Get-ChildItem -LiteralPath $destination -Recurse -Directory -Filter '__pycache__' -Force |
             ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
 
-        Get-ChildItem -LiteralPath $destination -Recurse -File -Include '*.pyc' -Force |
+        Get-ChildItem -LiteralPath $destination -Recurse -File -Filter '*.pyc' -Force |
             ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
     }
     else {
