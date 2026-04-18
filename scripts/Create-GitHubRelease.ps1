@@ -127,7 +127,6 @@ function Test-ReleaseExists {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $windowsPath = Join-Path $repoRoot 'windows'
-$linuxPath = Join-Path $repoRoot 'linux'
 $dayzManagerPath = Join-Path $repoRoot 'dayz_manager'
 $readmePath = Join-Path $repoRoot 'README.md'
 $steamCredentialsPath = Join-Path $repoRoot 'STEAMCMD-CREDENTIALS.md'
@@ -144,7 +143,7 @@ if (!(Test-CommandExists 'gh')) {
     throw 'GitHub CLI (`gh`) is required but was not found in PATH.'
 }
 
-foreach ($required in @($windowsPath, $linuxPath, $dayzManagerPath, $readmePath)) {
+foreach ($required in @($windowsPath, $dayzManagerPath, $readmePath)) {
     if (!(Test-Path -LiteralPath $required)) {
         throw "Required release source not found: $required"
     }
@@ -153,29 +152,21 @@ foreach ($required in @($windowsPath, $linuxPath, $dayzManagerPath, $readmePath)
 New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 
 $windowsZip = Join-Path $ReleaseDir ("dayz-server-manager-windows-x64-{0}.zip" -f $Tag)
-$linuxZip = Join-Path $ReleaseDir ("dayz-server-manager-linux-x64-{0}.zip" -f $Tag)
 
 $windowsSources = @($windowsPath, $dayzManagerPath, $readmePath)
 if (Test-Path -LiteralPath $steamCredentialsPath) {
     $windowsSources += $steamCredentialsPath
 }
 
-$linuxSources = @($linuxPath, $dayzManagerPath, $readmePath)
-
 if ($PSCmdlet.ShouldProcess($windowsZip, "Create Windows archive")) {
     New-ReleaseArchive -SourcePaths $windowsSources -DestinationPath $windowsZip
 }
 
-if ($PSCmdlet.ShouldProcess($linuxZip, "Create Linux archive")) {
-    New-ReleaseArchive -SourcePaths $linuxSources -DestinationPath $linuxZip
-}
-
 $windowsAsset = $windowsZip
-$linuxAsset = $linuxZip
 
 if ($PSCmdlet.ShouldProcess($Tag, 'Create or update GitHub release assets')) {
     if (Test-ReleaseExists -ReleaseTag $Tag) {
-        $uploadArgs = @('release', 'upload', $Tag, $windowsAsset, $linuxAsset)
+        $uploadArgs = @('release', 'upload', $Tag, $windowsAsset)
         if ($ClobberAssets) {
             $uploadArgs += '--clobber'
         }
@@ -187,7 +178,7 @@ if ($PSCmdlet.ShouldProcess($Tag, 'Create or update GitHub release assets')) {
         Write-Host "Uploaded assets to existing release $Tag."
     }
     else {
-        $createArgs = @('release', 'create', $Tag, $windowsAsset, $linuxAsset, '--title', $Title)
+        $createArgs = @('release', 'create', $Tag, $windowsAsset, '--title', $Title)
         if (!$SkipGenerateNotes) {
             $createArgs += '--generate-notes'
         }
@@ -207,4 +198,3 @@ if ($PSCmdlet.ShouldProcess($Tag, 'Create or update GitHub release assets')) {
 }
 
 Write-Host "Windows asset: $windowsZip"
-Write-Host "Linux asset: $linuxZip"
