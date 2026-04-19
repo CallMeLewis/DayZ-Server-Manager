@@ -584,6 +584,46 @@ Describe 'ModGroupManager menu navigation' {
 
 		Assert-MockCalled Pause-BeforeMenu -Times 0
 	}
+
+	It 'does not pause after cancelling rename group selection' {
+		$script:readHostResponses = @('3', '9')
+		$script:readHostIndex = 0
+
+		Mock Show-MenuHeader {}
+		Mock Pause-BeforeMenu {}
+		Mock Rename-ModGroupFromPrompt {
+			$script:lastMenuNavigationWasBack = $true
+		}
+		Mock Read-Host {
+			$response = $script:readHostResponses[$script:readHostIndex]
+			$script:readHostIndex++
+			return $response
+		}
+
+		ModGroupManager_menu
+
+		Assert-MockCalled Pause-BeforeMenu -Times 0
+	}
+
+	It 'does not pause after cancelling active group selection' {
+		$script:readHostResponses = @('7', '9')
+		$script:readHostIndex = 0
+
+		Mock Show-MenuHeader {}
+		Mock Pause-BeforeMenu {}
+		Mock Select-ActiveModGroupFromPrompt {
+			$script:lastMenuNavigationWasBack = $true
+		}
+		Mock Read-Host {
+			$response = $script:readHostResponses[$script:readHostIndex]
+			$script:readHostIndex++
+			return $response
+		}
+
+		ModGroupManager_menu
+
+		Assert-MockCalled Pause-BeforeMenu -Times 0
+	}
 }
 
 Describe 'Mod groups end-to-end' {

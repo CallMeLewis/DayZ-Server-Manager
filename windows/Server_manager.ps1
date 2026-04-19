@@ -130,6 +130,7 @@ $loadMods = $null
 $script:startupBootstrapActive = $false
 $script:serverManagerVersion = '1.1.0'
 $script:lastServerActionSucceeded = $false
+$script:lastMenuNavigationWasBack = $false
 $script:lastHybridBackendStatus = 'Not checked'
 $script:steamCmdSessionCredential = $null
 $script:steamCmdRetryCredentialResolver = { Request-SteamCmdRetryCredential }
@@ -386,6 +387,21 @@ function Pause-BeforeMenu {
 	if (Test-InteractiveMenuMode)
 		{
 			[void](Read-Host -Prompt 'Press Enter to return to menu')
+		}
+}
+
+function Reset-MenuNavigationBackState {
+	$script:lastMenuNavigationWasBack = $false
+}
+
+function Mark-MenuNavigationBackState {
+	$script:lastMenuNavigationWasBack = $true
+}
+
+function Pause-BeforeMenuUnlessBackNavigation {
+	if (-not $script:lastMenuNavigationWasBack)
+		{
+			Pause-BeforeMenu
 		}
 }
 
@@ -833,6 +849,7 @@ function Invoke-ModGroupsMigration {
 function Select-ActiveModGroupFromPrompt {
 	$config = Get-RootConfig
 	if (!$config) { return }
+	Reset-MenuNavigationBackState
 
 	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
 	if (@($groups).Count -eq 0)
@@ -858,7 +875,7 @@ function Select-ActiveModGroupFromPrompt {
 	Write-Host ""
 
 	$raw = Read-Host -Prompt 'Select a group number (or 0 to cancel)'
-	if ($raw -eq '0') { return }
+	if ($raw -eq '0') { Mark-MenuNavigationBackState; return }
 
 	$index = 0
 	if (-not [int]::TryParse($raw, [ref]$index) -or $index -lt 1 -or $index -gt $groups.Count)
@@ -1021,10 +1038,6 @@ function New-DefaultStateConfig {
 		steamCmdPath = $null
 		rootConfigPath = $rootConfigPath
 		lastSteamCmdSignInFailed = $false
-		serverSteamAuth = [pscustomobject]@{
-			usernameBlob = $null
-			passwordBlob = $null
-		}
 		generatedLaunch = [pscustomobject]@{
 			mod = ''
 			serverMod = ''
@@ -1581,7 +1594,7 @@ function Get-StateConfig {
 			return $state
 		}
 
-	if (($state.PSObject.Properties.Name -contains 'steamCmdLoginMode') -or ($state.PSObject.Properties.Name -contains 'steamCredentials') -or (-not ($state.PSObject.Properties.Name -contains 'serverSteamAuth')))
+	if (($state.PSObject.Properties.Name -contains 'steamCmdLoginMode') -or ($state.PSObject.Properties.Name -contains 'steamCredentials'))
 		{
 			$normalizedState = New-DefaultStateConfig
 			if ($state.PSObject.Properties.Name -contains 'steamCmdPath')
@@ -1613,14 +1626,7 @@ function Get-StateConfig {
 				}
 			if (($state.PSObject.Properties.Name -contains 'serverSteamAuth') -and $state.serverSteamAuth)
 				{
-					if ($state.serverSteamAuth.PSObject.Properties.Name -contains 'usernameBlob')
-						{
-							$normalizedState.serverSteamAuth.usernameBlob = $state.serverSteamAuth.usernameBlob
-						}
-					if ($state.serverSteamAuth.PSObject.Properties.Name -contains 'passwordBlob')
-						{
-							$normalizedState.serverSteamAuth.passwordBlob = $state.serverSteamAuth.passwordBlob
-						}
+					$normalizedState | Add-Member -NotePropertyName serverSteamAuth -NotePropertyValue $state.serverSteamAuth -Force
 				}
 
 			Save-StateConfig $normalizedState
@@ -1647,17 +1653,44 @@ function Get-StateConfig {
 			Save-StateConfig $state
 		}
 
-	# Migrate legacy Base64-encoded username blobs to DPAPI encryption.
+	# Migrate legacy serverSteamAuth blobs into the Windows Credential Vault.
+	# One-shot per user: once the vault holds the creds, the state.json section
+	# is stripped and never rewritten.
 	if ($state.PSObject.Properties.Name -contains 'serverSteamAuth' -and
 		$state.serverSteamAuth -and
 		$state.serverSteamAuth.PSObject.Properties.Name -contains 'usernameBlob' -and
-		-not [string]::IsNullOrWhiteSpace($state.serverSteamAuth.usernameBlob))
+		$state.serverSteamAuth.PSObject.Properties.Name -contains 'passwordBlob' -and
+		-not [string]::IsNullOrWhiteSpace($state.serverSteamAuth.usernameBlob) -and
+		-not [string]::IsNullOrWhiteSpace($state.serverSteamAuth.passwordBlob))
 		{
-			$legacyUsername = Convert-LegacyUsernameBlob $state.serverSteamAuth.usernameBlob
-			if ($legacyUsername)
+			$legacyUsername = Unprotect-StateSecret $state.serverSteamAuth.usernameBlob
+			if ([string]::IsNullOrWhiteSpace($legacyUsername))
 				{
-					$state.serverSteamAuth.usernameBlob = Protect-StateSecret $legacyUsername
-					Save-StateConfig $state
+					try
+						{
+							$legacyUsername = [System.Text.Encoding]::UTF8.GetString(
+								[Convert]::FromBase64String($state.serverSteamAuth.usernameBlob))
+						}
+					catch
+						{
+							$legacyUsername = $null
+						}
+				}
+			$legacyPassword = Unprotect-StateSecret $state.serverSteamAuth.passwordBlob
+
+			if (-not [string]::IsNullOrWhiteSpace($legacyUsername) -and
+				-not [string]::IsNullOrWhiteSpace($legacyPassword))
+				{
+					try
+						{
+							Write-CredentialVault -Target $script:credentialVaultTarget -Username $legacyUsername -Password $legacyPassword
+							$state.PSObject.Properties.Remove('serverSteamAuth')
+							Save-StateConfig $state
+						}
+					catch
+						{
+							# Vault write failed; leave state intact so migration can retry on the next launch.
+						}
 				}
 		}
 
@@ -1671,25 +1704,10 @@ function Save-StateConfig {
 	Set-PrivateFileAcl $stateConfigPath
 }
 
-# Encrypts a string using Windows DPAPI via ConvertFrom-SecureString.
-# DPAPI scope: The encrypted blob can only be decrypted by the same
-# Windows user account on the same machine. If the user profile is
-# destroyed or the state file is copied to another machine, the
-# credentials will need to be re-entered.
-function Protect-StateSecret {
-	param(
-		[string] $Value
-	)
-
-	if ([string]::IsNullOrWhiteSpace($Value))
-		{
-			return $null
-		}
-
-	$secureValue = ConvertTo-SecureString $Value -AsPlainText -Force
-	return ConvertFrom-SecureString $secureValue
-}
-
+# Decrypts a DPAPI blob produced by ConvertFrom-SecureString.
+# Used by the one-shot migration that moves legacy serverSteamAuth blobs
+# from state.json into the Windows Credential Manager; safe to remove once
+# no pre-vault state files remain in the wild.
 function Unprotect-StateSecret {
 	param(
 		[string] $Blob
@@ -1711,36 +1729,165 @@ function Unprotect-StateSecret {
 		}
 }
 
-function Convert-LegacyUsernameBlob {
-	param([string] $Blob)
+$script:credentialVaultTarget = 'DayZServerManager:SteamCmd'
+$script:credentialVaultTypesAdded = $false
 
-	if ([string]::IsNullOrWhiteSpace($Blob))
+function Add-CredentialVaultTypes {
+	if ($script:credentialVaultTypesAdded)
 		{
-			return $null
+			return
 		}
 
-	# Try DPAPI decryption first - if it works, no migration needed.
-	$dpapi = Unprotect-StateSecret $Blob
-	if ($dpapi)
-		{
-			return $null
-		}
+	$signature = @'
+using System;
+using System.Runtime.InteropServices;
 
-	# Fall back to Base64 decode (the legacy format).
+public static class DayzCredentialVault {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct CREDENTIAL {
+        public uint Flags;
+        public uint Type;
+        public IntPtr TargetName;
+        public IntPtr Comment;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public uint CredentialBlobSize;
+        public IntPtr CredentialBlob;
+        public uint Persist;
+        public uint AttributeCount;
+        public IntPtr Attributes;
+        public IntPtr TargetAlias;
+        public IntPtr UserName;
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CredWriteW(ref CREDENTIAL credential, uint flags);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CredReadW(string target, uint type, uint reservedFlag, out IntPtr credentialPtr);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CredDeleteW(string target, uint type, uint reservedFlag);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern void CredFree(IntPtr buffer);
+}
+'@
+
 	try
 		{
-			$decoded = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Blob))
-			if (![string]::IsNullOrWhiteSpace($decoded))
-				{
-					return $decoded
-				}
+			Add-Type -TypeDefinition $signature -Language CSharp -ErrorAction Stop
 		}
 	catch
 		{
-			# Not valid Base64 either - blob is corrupted.
+			# The type is already defined in this PowerShell session (e.g. dot-sourced twice).
+			if ($_.Exception.Message -notmatch 'already') { throw }
 		}
 
-	return $null
+	$script:credentialVaultTypesAdded = $true
+}
+
+function Write-CredentialVault {
+	param(
+		[Parameter(Mandatory = $true)] [string] $Target,
+		[Parameter(Mandatory = $true)] [string] $Username,
+		[Parameter(Mandatory = $true)] [AllowEmptyString()] [string] $Password
+	)
+
+	Add-CredentialVaultTypes
+
+	$passwordBytes = [System.Text.Encoding]::Unicode.GetBytes($Password)
+	$blobPtr       = [IntPtr]::Zero
+	$targetPtr     = [IntPtr]::Zero
+	$userPtr       = [IntPtr]::Zero
+	try
+		{
+			if ($passwordBytes.Length -gt 0)
+				{
+					$blobPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($passwordBytes.Length)
+					[System.Runtime.InteropServices.Marshal]::Copy($passwordBytes, 0, $blobPtr, $passwordBytes.Length)
+				}
+			$targetPtr = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni($Target)
+			$userPtr   = [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni($Username)
+
+			$credential = New-Object DayzCredentialVault+CREDENTIAL
+			$credential.Flags              = 0
+			$credential.Type               = 1  # CRED_TYPE_GENERIC
+			$credential.TargetName         = $targetPtr
+			$credential.CredentialBlobSize = [uint32] $passwordBytes.Length
+			$credential.CredentialBlob     = $blobPtr
+			$credential.Persist            = 3  # CRED_PERSIST_ENTERPRISE
+			$credential.UserName           = $userPtr
+
+			$ok = [DayzCredentialVault]::CredWriteW([ref] $credential, 0)
+			if (-not $ok)
+				{
+					$code = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+					throw "CredWriteW failed with Win32 error $code"
+				}
+		}
+	finally
+		{
+			if ($blobPtr   -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($blobPtr) }
+			if ($targetPtr -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($targetPtr) }
+			if ($userPtr   -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($userPtr) }
+		}
+}
+
+function Read-CredentialVault {
+	param([Parameter(Mandatory = $true)] [string] $Target)
+
+	Add-CredentialVaultTypes
+
+	$credPtr = [IntPtr]::Zero
+	$ok = [DayzCredentialVault]::CredReadW($Target, 1, 0, [ref] $credPtr)
+	if (-not $ok)
+		{
+			return $null
+		}
+
+	try
+		{
+			$cred     = [System.Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [type] ([DayzCredentialVault+CREDENTIAL]))
+			$username = ''
+			if ($cred.UserName -ne [IntPtr]::Zero)
+				{
+					$username = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($cred.UserName)
+				}
+			$password = ''
+			if ($cred.CredentialBlobSize -gt 0 -and $cred.CredentialBlob -ne [IntPtr]::Zero)
+				{
+					$bytes = New-Object byte[] $cred.CredentialBlobSize
+					[System.Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, [int] $cred.CredentialBlobSize)
+					$password = [System.Text.Encoding]::Unicode.GetString($bytes)
+				}
+			return [pscustomobject] @{
+				Username = $username
+				Password = $password
+			}
+		}
+	finally
+		{
+			[DayzCredentialVault]::CredFree($credPtr)
+		}
+}
+
+function Remove-CredentialVault {
+	param([Parameter(Mandatory = $true)] [string] $Target)
+
+	Add-CredentialVaultTypes
+
+	$ok = [DayzCredentialVault]::CredDeleteW($Target, 1, 0)
+	if (-not $ok)
+		{
+			$code = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+			if ($code -ne 1168)  # ERROR_NOT_FOUND
+				{
+					throw "CredDeleteW failed with Win32 error $code"
+				}
+		}
 }
 
 function Save-SteamCmdCredential {
@@ -1751,17 +1898,12 @@ function Save-SteamCmdCredential {
 			return
 		}
 
+	Write-CredentialVault -Target $script:credentialVaultTarget -Username $Credential.UserName -Password $Credential.GetNetworkCredential().Password
+
 	$state = Get-StateConfig
-	$password = $Credential.GetNetworkCredential().Password
-	$credentialState = [pscustomobject]@{
-		usernameBlob = Protect-StateSecret $Credential.UserName
-		passwordBlob = Protect-StateSecret $password
-	}
 	if ($state.PSObject.Properties.Name -contains 'serverSteamAuth')
 		{
-			$state.serverSteamAuth = $credentialState
-		} else {
-			$state | Add-Member -NotePropertyName serverSteamAuth -NotePropertyValue $credentialState -Force
+			$state.PSObject.Properties.Remove('serverSteamAuth')
 		}
 	if ($state.PSObject.Properties.Name -contains 'lastSteamCmdSignInFailed')
 		{
@@ -1802,22 +1944,18 @@ function Set-SteamCmdRetryCredentialResolver {
 }
 
 function Get-SavedSteamCmdCredential {
-	$state = Get-StateConfig
-	if (!$state -or !($state.PSObject.Properties.Name -contains 'serverSteamAuth') -or !$state.serverSteamAuth)
+	$read = Read-CredentialVault -Target $script:credentialVaultTarget
+	if ($null -eq $read)
+		{
+			return $null
+		}
+	if ([string]::IsNullOrWhiteSpace($read.Username) -or [string]::IsNullOrWhiteSpace($read.Password))
 		{
 			return $null
 		}
 
-	$username = Unprotect-StateSecret $state.serverSteamAuth.usernameBlob
-	$password = Unprotect-StateSecret $state.serverSteamAuth.passwordBlob
-
-	if ([string]::IsNullOrWhiteSpace($username) -or [string]::IsNullOrWhiteSpace($password))
-		{
-			return $null
-		}
-
-	$securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-	return New-Object System.Management.Automation.PSCredential ($username, $securePassword)
+	$securePassword = ConvertTo-SecureString $read.Password -AsPlainText -Force
+	return New-Object System.Management.Automation.PSCredential ($read.Username, $securePassword)
 }
 
 function Clear-SteamCmdCredential {
@@ -1826,6 +1964,13 @@ function Clear-SteamCmdCredential {
 	$hadFailureMarker = Test-SteamCmdLastSignInFailed
 
 	Clear-SteamCmdSessionCredential
+
+	$vaultHad = ($null -ne (Read-CredentialVault -Target $script:credentialVaultTarget))
+	Remove-CredentialVault -Target $script:credentialVaultTarget
+	if ($vaultHad)
+		{
+			$cleared = $true
+		}
 
 	if ($state -and ($state.PSObject.Properties.Name -contains 'serverSteamAuth'))
 		{
@@ -4004,12 +4149,12 @@ function ModGroupManager_menu {
 			switch ($select)
 				{
 					1 { New-ModGroupFromPrompt; Pause-BeforeMenu; continue }
-					2 { Edit-ModGroupFromPrompt; Pause-BeforeMenu; continue }
-					3 { Rename-ModGroupFromPrompt; Pause-BeforeMenu; continue }
-					4 { Copy-ModGroupFromPrompt; Pause-BeforeMenu; continue }
-					5 { Remove-ModGroupFromPrompt; Pause-BeforeMenu; continue }
-					6 { $result = Show-ModGroupDetail; if ($result -ne $false) { Pause-BeforeMenu }; continue }
-					7 { Select-ActiveModGroupFromPrompt; Pause-BeforeMenu; continue }
+					2 { Reset-MenuNavigationBackState; Edit-ModGroupFromPrompt; Pause-BeforeMenuUnlessBackNavigation; continue }
+					3 { Reset-MenuNavigationBackState; Rename-ModGroupFromPrompt; Pause-BeforeMenuUnlessBackNavigation; continue }
+					4 { Reset-MenuNavigationBackState; Copy-ModGroupFromPrompt; Pause-BeforeMenuUnlessBackNavigation; continue }
+					5 { Reset-MenuNavigationBackState; Remove-ModGroupFromPrompt; Pause-BeforeMenuUnlessBackNavigation; continue }
+					6 { Reset-MenuNavigationBackState; $result = Show-ModGroupDetail; if (($result -ne $false) -and (-not $script:lastMenuNavigationWasBack)) { Pause-BeforeMenu }; continue }
+					7 { Reset-MenuNavigationBackState; Select-ActiveModGroupFromPrompt; Pause-BeforeMenuUnlessBackNavigation; continue }
 					8 { Clear-ActiveModGroupFromPrompt; Pause-BeforeMenu; continue }
 					9 { return }
 					Default {
@@ -4029,6 +4174,8 @@ function Select-ModGroupFromList {
 		[string] $Prompt,
 		$CatalogSummary = $null
 	)
+
+	Reset-MenuNavigationBackState
 
 	if (@($Groups).Count -eq 0)
 		{
@@ -4060,7 +4207,7 @@ function Select-ModGroupFromList {
 	Write-Host ""
 
 	$raw = Read-Host -Prompt "$Prompt (0 to cancel)"
-	if ($raw -eq '0') { return $null }
+	if ($raw -eq '0') { Mark-MenuNavigationBackState; return $null }
 
 	$index = 0
 	if (-not [int]::TryParse($raw, [ref]$index) -or $index -lt 1 -or $index -gt $Groups.Count)
@@ -4337,7 +4484,8 @@ function Show-ModGroupDetail {
 	$groups = if ($config.PSObject.Properties.Name -contains 'modGroups') { @($config.modGroups) } else { @() }
 	$catalogSummary = Get-GroupCatalogSummaryFromConfig $config
 	$group = Select-ModGroupFromList $groups 'Select a group to view' $catalogSummary
-	if (!$group) { return $false }
+	if ($script:lastMenuNavigationWasBack) { return $false }
+	if (!$group) { return }
 
 	$resolved = Get-GroupDetailFromConfig $config $group.name
 	if (!$resolved)
@@ -4498,11 +4646,12 @@ function Menu {
 
 						$select = $null
 						$script:lastServerActionSucceeded = $false
+						Reset-MenuNavigationBackState
 						Server_menu
 
 						if (!$script:lastServerActionSucceeded)
 							{
-								Pause-BeforeMenu
+								Pause-BeforeMenuUnlessBackNavigation
 							}
 
 						continue
@@ -5346,6 +5495,7 @@ function ModsUpdate {
 
 #Run DayZ server with mods
 function Server_menu {
+	Reset-MenuNavigationBackState
 	
 	#Path to server folder
 	$serverFolder = Join-Path $folder $appFolder.TrimStart('\')
@@ -5456,6 +5606,7 @@ function Server_menu {
 
                             #Return to previous menu
                             3 {
+                                    Mark-MenuNavigationBackState
                                     $script:lastServerActionSucceeded = $false
 									return
                                 }

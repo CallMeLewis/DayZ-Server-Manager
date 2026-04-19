@@ -56,12 +56,12 @@ Describe 'SteamCMD login arguments' {
         $state.rootConfigPath | Should Be 'D:\Coding\DayZ\Server Manager\windows\server-manager.config.json'
         $state.generatedLaunch.mod | Should Be ''
         @($state.trackedServers).Count | Should Be 0
-        $state.serverSteamAuth.usernameBlob | Should Be $null
-        $state.serverSteamAuth.passwordBlob | Should Be $null
+        ($state.PSObject.Properties.Name -contains 'serverSteamAuth') | Should Be $false
 
         $savedState = Get-JsonFile $stateConfigPath
         ($savedState.PSObject.Properties.Name -contains 'steamCmdLoginMode') | Should Be $false
         ($savedState.PSObject.Properties.Name -contains 'steamCredentials') | Should Be $false
+        ($savedState.PSObject.Properties.Name -contains 'serverSteamAuth') | Should Be $false
     }
 }
 

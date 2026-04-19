@@ -6,9 +6,8 @@ This guide describes how Server\_manager.ps1 manages your SteamCMD login details
 
 - The script never asks for Steam credentials when it starts.
 - One-time logins stay in memory only for your active PowerShell session.
-- Saved logins are stored in a state file within your system Documents folder.
-- The script encrypts your username and password using Windows DPAPI. Only your Windows user account on your specific machine can decrypt them.
-- File permissions restrict the state file so only your Windows user can access it.
+- Saved logins are stored in the **Windows Credential Manager** (the same vault used by `cmdkey` and the built-in "Credential Manager" control panel).
+- Only your Windows user account on your specific machine can read the vault entry.
 - The script only interacts with your local steamcmd.exe. It never sends your details to external services.
 - Credentials pass to SteamCMD through a temporary runscript file. This file is deleted the moment SteamCMD finishes.
 
@@ -17,39 +16,21 @@ This guide describes how Server\_manager.ps1 manages your SteamCMD login details
 The script uses two places for credentials:
 
 - Session-only: Stored in the `$script:steamCmdSessionCredential` variable.
-- Saved: Stored in `Documents\DayZ_Server\server-manager.state.json`.
+- Saved: Stored in the Windows Credential Manager under the target name `DayZServerManager:SteamCmd` as a generic credential.
 
-The saved file uses the `serverSteamAuth` property:
+The script's state file (`Documents\DayZ_Server\server-manager.state.json`) no longer contains any `serverSteamAuth` block. If an older state file does still carry it, the next launch migrates it into the Credential Manager and strips the block from JSON.
 
-```json
-{
-  "serverSteamAuth": {
-    "usernameBlob": "...",
-    "passwordBlob": "..."
-  }
-}
-```
+You can inspect the saved entry at any time by opening `Control Panel → User Accounts → Credential Manager → Windows Credentials` and looking for the `DayZServerManager:SteamCmd` target.
 
-## Storage Methods
+## Storage Method
 
-### Username
+The script calls the native Windows Credential Manager APIs (`CredWriteW`, `CredReadW`, `CredDeleteW` from `advapi32.dll`) via P/Invoke. The credential is stored with:
 
-The `usernameBlob` contains your encrypted username. The `Protect-StateSecret` function turns the name into a `SecureString` and uses `ConvertFrom-SecureString` to create an encrypted blob. This uses Windows DPAPI to lock the data to your Windows account. If you have an older state file using Base64, the script automatically upgrades it to DPAPI encryption when you first run it.
+- Type: `CRED_TYPE_GENERIC`
+- Persistence: `CRED_PERSIST_ENTERPRISE` (per-user, survives reboots)
+- Target name: `DayZServerManager:SteamCmd`
 
-### Password
-
-The `passwordBlob` uses the same DPAPI encryption method:
-
-```powershell
-$secureValue = ConvertTo-SecureString $Value -AsPlainText -Force
-ConvertFrom-SecureString $secureValue
-```
-
-The script relies on PowerShell's built-in commands to handle the cryptography internally.
-
-### File Permissions
-
-Every time the script writes to the state file, it uses `icacls` to lock it down. It removes inherited permissions and grants full control only to your Windows user.
+The vault itself is encrypted by the operating system and is scoped to the Windows user profile. Copying the state file or the repo to another machine (or another Windows user) does not carry the credentials across — you will be prompted to re-enter them.
 
 ## Login Options
 
@@ -59,7 +40,7 @@ If you select `Use account once`:
 
 - The script asks for your name and password.
 - It creates a `PSCredential` object.
-- It keeps the data in `$script:steamCmdSessionCredential` and never writes it to your disk.
+- It keeps the data in `$script:steamCmdSessionCredential` and never writes it to the vault.
 - The credential stays active for other updates until you close the PowerShell window.
 
 ### Saved Login
@@ -67,8 +48,7 @@ If you select `Use account once`:
 If you select `Save account securely`:
 
 - The script asks for your name and password.
-- It encrypts the data into `usernameBlob` and `passwordBlob` within `server-manager.state.json`.
-- It applies strict file permissions to the JSON file.
+- It writes them to the Windows Credential Manager via `CredWriteW`.
 - It clears any session-only data and updates your status to `Saved`.
 
 ### Failed Sign-In
@@ -78,7 +58,7 @@ If a login fails, you can:
 - Re-enter account once
 - Clear saved account and re-enter
 
-The script only updates the saved JSON file if the new login succeeds.
+The script only updates the saved vault entry if the new login succeeds.
 
 ## Passing Credentials to SteamCMD
 
@@ -105,8 +85,7 @@ SteamCMD runs through `System.Diagnostics.Process`. This allows you to see and r
 The script protects your password through several layers:
 
 - **No Command-Line Exposure**: Credentials stay inside a temporary file. They never appear in Task Manager or process monitors.
-- **DPAPI Encryption**: Your data is useless on another computer or under a different Windows user.
-- **File Permissions**: The JSON file stays restricted to your account.
+- **Windows Credential Manager**: The vault is scoped to the current Windows user and machine. Data is useless on another computer or under a different Windows user.
 - **Automatic Cleanup**: The script ensures the temporary login file is deleted even if an error occurs.
 - **Parameter Validation**: The script checks server launch parameters against an allowlist to prevent malicious commands.
 - **Signature Checks**: The script verifies Valve's Authenticode signature on steamcmd.exe before running it.
@@ -129,8 +108,24 @@ The credentials only go to your local steamcmd.exe.
 The `Clear-SteamCmdCredential` function performs a full cleanup:
 
 - It wipes the session credential from memory.
-- It deletes the `serverSteamAuth` section from your state file.
+- It deletes the `DayZServerManager:SteamCmd` entry from the Windows Credential Manager.
+- It removes any legacy `serverSteamAuth` block still present in the state file.
 - It resets the login failure markers.
+
+You can also delete the vault entry manually via `Control Panel → Credential Manager → Windows Credentials → DayZServerManager:SteamCmd → Remove` or from an elevated prompt with `cmdkey /delete:DayZServerManager:SteamCmd`.
+
+## Migration From DPAPI-Encrypted State Files
+
+Older versions of the script stored credentials as DPAPI blobs inside `server-manager.state.json` under `serverSteamAuth.usernameBlob` / `serverSteamAuth.passwordBlob`. On first launch after upgrading:
+
+1. The script reads the legacy blobs.
+2. It decrypts them via `ConvertTo-SecureString` (DPAPI) — or, for very old installs, Base64-decodes the username blob.
+3. It writes both values into the Windows Credential Manager via `CredWriteW`.
+4. It strips `serverSteamAuth` from `server-manager.state.json` and saves the file.
+
+If the blobs are unreadable (corrupted, or from a different Windows user), the block is left alone so you can retry later, and the script prompts for fresh credentials. No data is lost in this path.
+
+If you downgrade to an older release, the vault entry is not automatically moved back into `state.json`; the old release will simply prompt for credentials again.
 
 ## Security Boundaries
 
@@ -146,15 +141,16 @@ If these risks concern you, do not use the save feature. Use a dedicated Steam a
 
 You can verify these security steps by reviewing these functions in `Server_manager.ps1`:
 
-- `Protect-StateSecret`
-- `Unprotect-StateSecret`
-- `Convert-LegacyUsernameBlob`
+- `Add-CredentialVaultTypes`
+- `Write-CredentialVault`
+- `Read-CredentialVault`
+- `Remove-CredentialVault`
 - `Save-SteamCmdCredential`
 - `Get-SavedSteamCmdCredential`
+- `Clear-SteamCmdCredential`
 - `New-SteamCmdLoginScript`
 - `Prompt-SteamCmdCredential`
 - `Resolve-SteamCmdDownloadCredential`
 - `Invoke-SteamCmdCommand`
 - `Invoke-SteamCmdAuthenticatedOperation`
-- `Set-PrivateFileAcl`
 - `Test-SafeLaunchParameters`

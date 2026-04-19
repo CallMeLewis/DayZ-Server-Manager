@@ -7,10 +7,14 @@ Describe 'server Steam authentication storage' {
         $script:tempLoginScript = Join-Path $TestDrive 'steamcmd-login.tmp'
         Save-JsonFile $script:stateConfigPath (New-DefaultStateConfig)
         Clear-SteamCmdSessionCredential
+        $script:originalVaultTarget = $script:credentialVaultTarget
+        $script:credentialVaultTarget = "DayZServerManagerTest:$([guid]::NewGuid())"
     }
 
     AfterEach {
         Clear-SteamCmdSessionCredential
+        try { Remove-CredentialVault -Target $script:credentialVaultTarget } catch { }
+        $script:credentialVaultTarget = $script:originalVaultTarget
     }
 
     It 'does not depend on ProtectedData for credential storage' {
@@ -19,15 +23,19 @@ Describe 'server Steam authentication storage' {
         $scriptSource -match 'System\.Security\.Cryptography\.ProtectedData' | Should Be $false
     }
 
-    It 'saves and loads server Steam credentials with encrypted protection' {
+    It 'saves and loads server Steam credentials via the Windows Credential Vault' {
         $securePassword = ConvertTo-SecureString 'secret-pass' -AsPlainText -Force
         $credential = New-Object System.Management.Automation.PSCredential ('dayz-owner', $securePassword)
 
         Save-SteamCmdCredential $credential
 
+        $vaultEntry = Read-CredentialVault -Target $script:credentialVaultTarget
+        $vaultEntry | Should Not BeNullOrEmpty
+        $vaultEntry.Username | Should Be 'dayz-owner'
+        $vaultEntry.Password | Should Be 'secret-pass'
+
         $savedState = Get-JsonFile $script:stateConfigPath
-        $savedState.serverSteamAuth.usernameBlob | Should Not BeNullOrEmpty
-        $savedState.serverSteamAuth.passwordBlob | Should Not BeNullOrEmpty
+        ($savedState.PSObject.Properties.Name -contains 'serverSteamAuth') | Should Be $false
 
         $loaded = Get-SavedSteamCmdCredential
         $loaded.UserName | Should Be 'dayz-owner'
@@ -87,22 +95,18 @@ Describe 'server Steam authentication storage' {
     }
 
     It 'prompts for credentials and saves them when requested' {
-        $script:savedState = $null
-
         Mock Read-Host { 'dayz-owner' } -ParameterFilter { $Prompt -eq 'Steam account name' }
         Mock Read-Host { 'secret-pass' } -ParameterFilter { $Prompt -eq 'Steam password' }
-        Mock Save-StateConfig {
-            param($State)
-            $script:savedState = $State
-        }
 
         $credential = Prompt-SteamCmdCredential -Persist:$true
 
         $credential.UserName | Should Be 'dayz-owner'
         $credential.GetNetworkCredential().Password | Should Be 'secret-pass'
-        Assert-MockCalled Save-StateConfig -Times 1
-        $script:savedState.serverSteamAuth.usernameBlob | Should Not BeNullOrEmpty
-        $script:savedState.serverSteamAuth.passwordBlob | Should Not BeNullOrEmpty
+
+        $vaultEntry = Read-CredentialVault -Target $script:credentialVaultTarget
+        $vaultEntry | Should Not BeNullOrEmpty
+        $vaultEntry.Username | Should Be 'dayz-owner'
+        $vaultEntry.Password | Should Be 'secret-pass'
     }
 
     It 'clears saved credentials from state' {
@@ -146,12 +150,16 @@ Describe 'authenticated SteamCMD download flow' {
         Clear-SteamCmdSessionCredential
         Clear-SteamCmdLastSignInFailed
         Set-SteamCmdRetryCredentialResolver $null
+        $script:originalVaultTarget = $script:credentialVaultTarget
+        $script:credentialVaultTarget = "DayZServerManagerTest:$([guid]::NewGuid())"
     }
 
     AfterEach {
         Clear-SteamCmdSessionCredential
         Clear-SteamCmdLastSignInFailed
         Set-SteamCmdRetryCredentialResolver $null
+        try { Remove-CredentialVault -Target $script:credentialVaultTarget } catch { }
+        $script:credentialVaultTarget = $script:originalVaultTarget
     }
 
     It 'prompts for a SteamCMD account before server update when none is saved' {
@@ -569,6 +577,16 @@ Describe 'authenticated SteamCMD download flow' {
 }
 
 Describe 'Steam login configuration seam' {
+    BeforeEach {
+        $script:originalVaultTarget = $script:credentialVaultTarget
+        $script:credentialVaultTarget = "DayZServerManagerTest:$([guid]::NewGuid())"
+    }
+
+    AfterEach {
+        try { Remove-CredentialVault -Target $script:credentialVaultTarget } catch { }
+        $script:credentialVaultTarget = $script:originalVaultTarget
+    }
+
     It 'exposes Test-SteamCmdCredentialConfigured for the main status block' {
         Get-Command Test-SteamCmdCredentialConfigured -CommandType Function -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
     }

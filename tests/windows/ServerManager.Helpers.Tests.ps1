@@ -265,6 +265,31 @@ Describe 'Server manager guard helpers' {
         Assert-MockCalled Pause-BeforeMenu -Times 0
     }
 
+    It 'returns to the main menu without pausing after backing out of start server' {
+        $script:menuReadHostCalls = 0
+
+        Mock Show-MenuHeader {}
+        Mock Show-MainMenuStatus {}
+        Mock Pause-BeforeMenu {}
+        Mock Server_menu {
+            $script:lastServerActionSucceeded = $false
+            $script:lastMenuNavigationWasBack = $true
+        }
+        Mock Read-Host {
+            $script:menuReadHostCalls++
+            if ($script:menuReadHostCalls -eq 1) { return '3' }
+            throw 'stop-menu-test'
+        }
+
+        try {
+            Menu
+        } catch {
+            $_.Exception.Message | Should Be 'stop-menu-test'
+        }
+
+        Assert-MockCalled Pause-BeforeMenu -Times 0
+    }
+
     It 'returns to the main menu without pausing after a successful stop' {
         $script:menuReadHostCalls = 0
 

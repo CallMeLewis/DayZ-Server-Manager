@@ -2,6 +2,16 @@ $script:ServerManagerSkipAutoRun = $true
 . "$PSScriptRoot\..\..\windows\Server_manager.ps1"
 
 Describe 'state config migration' {
+    BeforeEach {
+        $script:originalVaultTarget = $script:credentialVaultTarget
+        $script:credentialVaultTarget = "DayZServerManagerTest:$([guid]::NewGuid())"
+    }
+
+    AfterEach {
+        try { Remove-CredentialVault -Target $script:credentialVaultTarget } catch { }
+        $script:credentialVaultTarget = $script:originalVaultTarget
+    }
+
     It 'migrates saved paths, generated launch state, and tracked servers without importing legacy Steam login blobs' {
         $stateRoot = Join-Path $TestDrive 'DayZ_Server'
         New-Item -ItemType Directory -Path $stateRoot | Out-Null
@@ -30,11 +40,10 @@ Describe 'state config migration' {
         Test-Path -LiteralPath (Join-Path $stateRoot 'SteamLog2.txt.legacy.bak') | Should Be $false
     }
 
-    It 'migrates Base64-encoded username blob to DPAPI encryption on load' {
+    It 'migrates a Base64-encoded username blob from state.json into the Windows Credential Vault' {
         $stateConfigPath = Join-Path $TestDrive 'base64-migrate.state.json'
         $script:stateConfigPath = $stateConfigPath
 
-        # Create a state file with a Base64-encoded username (legacy format)
         $legacyUsernameBlob = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes('dayz-owner'))
         $securePassword = ConvertTo-SecureString 'secret-pass' -AsPlainText -Force
         $passwordBlob = ConvertFrom-SecureString $securePassword
@@ -51,20 +60,53 @@ Describe 'state config migration' {
             trackedServers = @()
         })
 
-        # Loading the state should trigger migration
         $state = Get-StateConfig
 
-        # The username blob should have changed (migrated from Base64 to DPAPI)
         $rawState = Get-JsonFile $stateConfigPath
-        $rawState.serverSteamAuth.usernameBlob | Should Not Be $legacyUsernameBlob
+        ($rawState.PSObject.Properties.Name -contains 'serverSteamAuth') | Should Be $false
 
-        # The credential should still round-trip correctly
+        $vaultEntry = Read-CredentialVault -Target $script:credentialVaultTarget
+        $vaultEntry | Should Not BeNullOrEmpty
+        $vaultEntry.Username | Should Be 'dayz-owner'
+        $vaultEntry.Password | Should Be 'secret-pass'
+
         $loaded = Get-SavedSteamCmdCredential
         $loaded.UserName | Should Be 'dayz-owner'
         $loaded.GetNetworkCredential().Password | Should Be 'secret-pass'
     }
 
-    It 'clears credentials when both DPAPI and Base64 decryption fail' {
+    It 'migrates a DPAPI-encoded username blob from state.json into the Windows Credential Vault' {
+        $stateConfigPath = Join-Path $TestDrive 'dpapi-migrate.state.json'
+        $script:stateConfigPath = $stateConfigPath
+
+        $secureUsername = ConvertTo-SecureString 'dayz-owner' -AsPlainText -Force
+        $usernameBlob = ConvertFrom-SecureString $secureUsername
+        $securePassword = ConvertTo-SecureString 'secret-pass' -AsPlainText -Force
+        $passwordBlob = ConvertFrom-SecureString $securePassword
+
+        Save-JsonFile $stateConfigPath ([pscustomobject]@{
+            steamCmdPath = $null
+            rootConfigPath = $rootConfigPath
+            lastSteamCmdSignInFailed = $false
+            serverSteamAuth = [pscustomobject]@{
+                usernameBlob = $usernameBlob
+                passwordBlob = $passwordBlob
+            }
+            generatedLaunch = [pscustomobject]@{ mod = ''; serverMod = '' }
+            trackedServers = @()
+        })
+
+        $state = Get-StateConfig
+
+        $rawState = Get-JsonFile $stateConfigPath
+        ($rawState.PSObject.Properties.Name -contains 'serverSteamAuth') | Should Be $false
+
+        $vaultEntry = Read-CredentialVault -Target $script:credentialVaultTarget
+        $vaultEntry.Username | Should Be 'dayz-owner'
+        $vaultEntry.Password | Should Be 'secret-pass'
+    }
+
+    It 'leaves state.json intact when the legacy blob cannot be decoded' {
         $stateConfigPath = Join-Path $TestDrive 'corrupt-migrate.state.json'
         $script:stateConfigPath = $stateConfigPath
 
@@ -85,8 +127,10 @@ Describe 'state config migration' {
 
         $state = Get-StateConfig
 
-        # Corrupted blob should be left as-is (migration returns null)
-        # but Get-SavedSteamCmdCredential should fail gracefully
+        $rawState = Get-JsonFile $stateConfigPath
+        ($rawState.PSObject.Properties.Name -contains 'serverSteamAuth') | Should Be $true
+
+        Read-CredentialVault -Target $script:credentialVaultTarget | Should BeNullOrEmpty
         Get-SavedSteamCmdCredential | Should BeNullOrEmpty
     }
 
