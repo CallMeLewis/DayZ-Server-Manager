@@ -5,6 +5,8 @@ Describe 'SteamCMD account menu contract' {
     BeforeEach {
         $script:stateConfigPath = Join-Path $TestDrive 'server-manager.state.json'
         Save-JsonFile $script:stateConfigPath (New-DefaultStateConfig)
+        $script:originalVaultTarget = $script:credentialVaultTarget
+        $script:credentialVaultTarget = "DayZServerManagerTest:$([guid]::NewGuid())"
         Clear-SteamCmdCredential
         Clear-SteamCmdSessionCredential
         Clear-SteamCmdLastSignInFailed
@@ -14,6 +16,11 @@ Describe 'SteamCMD account menu contract' {
         Clear-SteamCmdCredential
         Clear-SteamCmdSessionCredential
         Clear-SteamCmdLastSignInFailed
+        $script:credentialVaultTarget = $script:originalVaultTarget
+    }
+
+    It 'isolates credential operations from the production vault target' {
+        $script:credentialVaultTarget | Should Match '^DayZServerManagerTest:'
     }
 
     It 'exposes a dedicated DownloadLogin_menu entry point' {
