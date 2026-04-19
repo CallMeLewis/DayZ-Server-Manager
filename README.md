@@ -99,13 +99,13 @@ Located in the system Documents folder (supports redirected or roaming profiles)
 This file contains the current runtime state used by the manager:
 
 - SteamCMD path
-- Saved SteamCMD account state
+- Last SteamCMD sign-in status
 - Generated launch mod strings
 - Tracked DayZ server process metadata
 
 The state file is restricted to the current Windows user via file permissions.
 
-Saved SteamCMD account credentials (username and password) are encrypted using Windows DPAPI and can only be decrypted by the same Windows user on the same machine. You can also choose a one-time account login that is kept only for the current PowerShell session.
+Saved SteamCMD account credentials (username and password) are stored in Windows Credential Manager under the current Windows user profile and are not kept in `server-manager.state.json`. Existing saved logins from older releases are migrated automatically on first launch. You can also choose a one-time account login that is kept only for the current PowerShell session.
 
 Credentials are never passed on the SteamCMD command line. Instead, they are written to a temporary runscript file that is deleted immediately after use. See `STEAMCMD-CREDENTIALS.md` for full details.
 
