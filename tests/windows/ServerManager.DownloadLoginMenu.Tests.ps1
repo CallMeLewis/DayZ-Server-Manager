@@ -5,6 +5,15 @@ Describe 'SteamCMD account menu contract' {
     BeforeEach {
         $script:stateConfigPath = Join-Path $TestDrive 'server-manager.state.json'
         Save-JsonFile $script:stateConfigPath (New-DefaultStateConfig)
+        Clear-SteamCmdCredential
+        Clear-SteamCmdSessionCredential
+        Clear-SteamCmdLastSignInFailed
+    }
+
+    AfterEach {
+        Clear-SteamCmdCredential
+        Clear-SteamCmdSessionCredential
+        Clear-SteamCmdLastSignInFailed
     }
 
     It 'exposes a dedicated DownloadLogin_menu entry point' {

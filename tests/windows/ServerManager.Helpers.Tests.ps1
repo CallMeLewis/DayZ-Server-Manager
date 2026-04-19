@@ -1,5 +1,6 @@
 $script:ServerManagerSkipAutoRun = $true
 . "$PSScriptRoot\..\..\windows\Server_manager.ps1"
+$script:RealServerMenu = (Get-Command Server_menu -CommandType Function).ScriptBlock
 
 Describe 'Server manager guard helpers' {
     It 'rejects filesystem roots as removable SteamCMD folders' {
@@ -334,14 +335,12 @@ Describe 'Server manager guard helpers' {
         Assert-MockCalled Pause-BeforeMenu -Times 1
     }
 
-    It 'preserves successful start state through the interactive start server menu flow' {
+    It 'preserves successful start state through the saved-launch server start path' {
         $script:lastServerActionSucceeded = $false
-        $script:select = $null
         $script:folder = 'D:\SteamCMD'
         $script:appFolder = '\steamapps\common\DayZServer'
 
         Mock Show-MenuHeader {}
-        Mock Read-Host { return '1' }
         Mock Get-GeneratedLaunchMods {
             return [pscustomobject]@{
                 mod = ''
@@ -360,7 +359,7 @@ Describe 'Server manager guard helpers' {
         Mock Add-TrackedServerRecord {}
         Mock Start-Sleep {}
 
-        Server_menu
+        & $script:RealServerMenu -Selection '1'
 
         $script:lastServerActionSucceeded | Should Be $true
     }

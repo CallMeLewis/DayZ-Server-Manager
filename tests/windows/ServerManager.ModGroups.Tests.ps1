@@ -1,6 +1,26 @@
 $script:ServerManagerSkipAutoRun = $true
 . "$PSScriptRoot\..\..\windows\Server_manager.ps1"
 
+function Register-ReadHostSequenceMock {
+	param(
+		[string[]] $Responses
+	)
+
+	$script:readHostResponses = @($Responses)
+	$script:readHostIndex = 0
+
+	Mock Read-Host {
+		if ($script:readHostIndex -ge $script:readHostResponses.Count)
+			{
+				throw 'Test input exhausted before the menu exited.'
+			}
+
+		$response = $script:readHostResponses[$script:readHostIndex]
+		$script:readHostIndex++
+		return $response
+	}
+}
+
 Describe 'New-DefaultModGroup' {
 	It 'creates a group with given name and empty mod lists' {
 		$group = New-DefaultModGroup 'Test Group'
@@ -148,7 +168,7 @@ Describe 'Sync-LaunchParametersFromActiveGroup' {
 
 		Sync-LaunchParametersFromActiveGroup $config
 
-		$config.launchParameters | Should Be '-config=serverDZ.cfg "-mod=111;222;" "-serverMod=999;" -port=2302 -freezecheck'
+		$config.launchParameters | Should Be '-config=serverDZ.cfg -port=2302 -freezecheck "-mod=111;222;" "-serverMod=999;"'
 	}
 
 	It 'leaves non-mod portions of launchParameters unchanged' {
@@ -164,7 +184,7 @@ Describe 'Sync-LaunchParametersFromActiveGroup' {
 
 		Sync-LaunchParametersFromActiveGroup $config
 
-		$config.launchParameters | Should Be '-config=serverDZ.cfg "-mod=111;" "-serverMod=" "-profiles=D:\logs" -port=2302 -freezecheck -adminlog -dologs'
+		$config.launchParameters | Should Be '-config=serverDZ.cfg "-profiles=D:\logs" -port=2302 -freezecheck -adminlog -dologs "-mod=111;" "-serverMod="'
 	}
 
 	It 'writes empty mod slots when activeGroup is missing' {
@@ -180,7 +200,7 @@ Describe 'Sync-LaunchParametersFromActiveGroup' {
 
 		Sync-LaunchParametersFromActiveGroup $config
 
-		$config.launchParameters | Should Be '-config=serverDZ.cfg "-mod=" "-serverMod=" -port=2302'
+		$config.launchParameters | Should Be '-config=serverDZ.cfg -port=2302 "-mod=" "-serverMod="'
 	}
 }
 
@@ -295,6 +315,7 @@ Describe 'Get-RootConfig mod groups migration' {
 		New-Item -ItemType Directory -Path $script:tempRoot -Force | Out-Null
 		$script:origRootConfigPath = $rootConfigPath
 		$script:rootConfigPath = Join-Path $script:tempRoot 'server-manager.config.json'
+		Mock Get-WindowsRootConfigPath { return $script:rootConfigPath }
 	}
 
 	AfterEach {
@@ -345,10 +366,11 @@ Describe 'Set-ActiveModGroup' {
 			)
 		}
 
-		Set-ActiveModGroup $config 'New'
+		$updated = Set-ActiveModGroup $config 'New'
 
-		$config.activeGroup | Should Be 'New'
-		$config.launchParameters | Should Be '-config=serverDZ.cfg "-mod=111;222;" "-serverMod=999;" -port=2302'
+		$updated | Should Not Be $null
+		$updated.activeGroup | Should Be 'New'
+		$updated.launchParameters | Should Be '-config=serverDZ.cfg -port=2302 "-mod=111;222;" "-serverMod=999;"'
 	}
 
 	It 'returns false without changing state when the group does not exist' {
@@ -362,7 +384,7 @@ Describe 'Set-ActiveModGroup' {
 			)
 		}
 
-		(Set-ActiveModGroup $config 'Missing') | Should Be $false
+		(Set-ActiveModGroup $config 'Missing') | Should Be $null
 		$config.activeGroup | Should Be 'A'
 		$config.launchParameters | Should Be '-config=serverDZ.cfg "-mod=OLD;" "-serverMod=" -port=2302'
 	}
@@ -449,9 +471,11 @@ Describe 'Rename-ModGroup' {
 			)
 		}
 
-		(Rename-ModGroup $config 'Old' 'New') | Should Be $true
-		$config.modGroups[0].name | Should Be 'New'
-		$config.activeGroup | Should Be 'New'
+		$updated = Rename-ModGroup $config 'Old' 'New'
+
+		$updated | Should Not Be $null
+		$updated.modGroups[0].name | Should Be 'New'
+		$updated.activeGroup | Should Be 'New'
 	}
 
 	It 'rejects duplicate new names' {
@@ -466,7 +490,7 @@ Describe 'Rename-ModGroup' {
 			)
 		}
 
-		(Rename-ModGroup $config 'A' 'B') | Should Be $false
+		(Rename-ModGroup $config 'A' 'B') | Should Be $null
 		$config.modGroups[0].name | Should Be 'A'
 	}
 }
@@ -484,9 +508,11 @@ Describe 'Remove-ModGroup' {
 			)
 		}
 
-		(Remove-ModGroup $config 'B') | Should Be $true
-		@($config.modGroups).Count | Should Be 1
-		$config.modGroups[0].name | Should Be 'A'
+		$updated = Remove-ModGroup $config 'B'
+
+		$updated | Should Not Be $null
+		@($updated.modGroups).Count | Should Be 1
+		$updated.modGroups[0].name | Should Be 'A'
 	}
 
 	It 'refuses to remove the active group' {
@@ -501,7 +527,7 @@ Describe 'Remove-ModGroup' {
 			)
 		}
 
-		(Remove-ModGroup $config 'A') | Should Be $false
+		(Remove-ModGroup $config 'A') | Should Be $null
 		@($config.modGroups).Count | Should Be 2
 	}
 
@@ -516,7 +542,7 @@ Describe 'Remove-ModGroup' {
 			)
 		}
 
-		(Remove-ModGroup $config 'Only') | Should Be $false
+		(Remove-ModGroup $config 'Only') | Should Be $null
 	}
 }
 
@@ -541,12 +567,13 @@ Describe 'Remove-ModFromAllGroups' {
 		@($config.modGroups[0].mods).Count | Should Be 1
 		$config.modGroups[0].mods[0] | Should Be '111'
 		@($config.modGroups[1].mods).Count | Should Be 0
-		$config.launchParameters | Should Be '-config=serverDZ.cfg "-mod=111;" "-serverMod=" -port=2302'
+		$config.launchParameters | Should Be '-config=serverDZ.cfg -port=2302 "-mod=111;" "-serverMod="'
 	}
 }
 
 Describe 'Show-ModGroupDetail' {
 	It 'returns $false when the user cancels group selection' {
+		Mock Write-Host {}
 		Mock Get-RootConfig {
 			return [pscustomobject]@{
 				activeGroup      = 'A'
@@ -568,17 +595,11 @@ Describe 'Show-ModGroupDetail' {
 
 Describe 'ModGroupManager menu navigation' {
 	It 'does not pause after cancelling view group' {
-		$script:readHostResponses = @('6', '7')
-		$script:readHostIndex = 0
-
 		Mock Show-MenuHeader {}
+		Mock Write-Host {}
 		Mock Pause-BeforeMenu {}
 		Mock Show-ModGroupDetail { return $false }
-		Mock Read-Host {
-			$response = $script:readHostResponses[$script:readHostIndex]
-			$script:readHostIndex++
-			return $response
-		}
+		Register-ReadHostSequenceMock @('6', '9')
 
 		ModGroupManager_menu
 
@@ -586,19 +607,13 @@ Describe 'ModGroupManager menu navigation' {
 	}
 
 	It 'does not pause after cancelling rename group selection' {
-		$script:readHostResponses = @('3', '9')
-		$script:readHostIndex = 0
-
 		Mock Show-MenuHeader {}
+		Mock Write-Host {}
 		Mock Pause-BeforeMenu {}
 		Mock Rename-ModGroupFromPrompt {
 			$script:lastMenuNavigationWasBack = $true
 		}
-		Mock Read-Host {
-			$response = $script:readHostResponses[$script:readHostIndex]
-			$script:readHostIndex++
-			return $response
-		}
+		Register-ReadHostSequenceMock @('3', '9')
 
 		ModGroupManager_menu
 
@@ -606,19 +621,13 @@ Describe 'ModGroupManager menu navigation' {
 	}
 
 	It 'does not pause after cancelling active group selection' {
-		$script:readHostResponses = @('7', '9')
-		$script:readHostIndex = 0
-
 		Mock Show-MenuHeader {}
+		Mock Write-Host {}
 		Mock Pause-BeforeMenu {}
 		Mock Select-ActiveModGroupFromPrompt {
 			$script:lastMenuNavigationWasBack = $true
 		}
-		Mock Read-Host {
-			$response = $script:readHostResponses[$script:readHostIndex]
-			$script:readHostIndex++
-			return $response
-		}
+		Register-ReadHostSequenceMock @('7', '9')
 
 		ModGroupManager_menu
 
@@ -632,6 +641,7 @@ Describe 'Mod groups end-to-end' {
 		New-Item -ItemType Directory -Path $script:tempRoot -Force | Out-Null
 		$script:origRootConfigPath = $rootConfigPath
 		$script:rootConfigPath = Join-Path $script:tempRoot 'server-manager.config.json'
+		Mock Get-WindowsRootConfigPath { return $script:rootConfigPath }
 
 		$seed = @{
 			activeGroup      = 'A'
@@ -658,14 +668,15 @@ Describe 'Mod groups end-to-end' {
 
 	It 'switches active group and rewrites launch params' {
 		$config = Get-RootConfig
-		Set-ActiveModGroup $config 'B' | Should Be $true
-		Save-RootConfig $config
+		$updated = Set-ActiveModGroup $config 'B'
+		$updated | Should Not Be $null
+		Save-RootConfig $updated
 
 		$reloaded = Get-RootConfig
 		$reloaded.activeGroup | Should Be 'B'
+		($reloaded.launchParameters -match '"-profiles=D:\\logs"') | Should Be $true
 		($reloaded.launchParameters -match '"-mod=111;"') | Should Be $true
 		($reloaded.launchParameters -match '"-serverMod=;?"') | Should Be $true
-		($reloaded.launchParameters -match '"-profiles=D:\\logs"') | Should Be $true
 	}
 
 	It 'cascade-deletes a library mod referenced by active group' {

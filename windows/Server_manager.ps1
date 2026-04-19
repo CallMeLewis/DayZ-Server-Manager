@@ -1720,7 +1720,7 @@ function Unprotect-StateSecret {
 
 	try
 		{
-			$secureValue = ConvertTo-SecureString $Blob
+			$secureValue = ConvertTo-SecureString $Blob -ErrorAction Stop
 			return (New-Object System.Management.Automation.PSCredential ('state', $secureValue)).GetNetworkCredential().Password
 		}
 	catch
@@ -5495,6 +5495,10 @@ function ModsUpdate {
 
 #Run DayZ server with mods
 function Server_menu {
+	param(
+		[string] $Selection = $null
+	)
+
 	Reset-MenuNavigationBackState
 	
 	#Path to server folder
@@ -5514,7 +5518,7 @@ function Server_menu {
 			return
 		} else {
 	
-                    switch ($select)
+                    switch ($Selection)
                         {
                             #Start server menu
                             $null {
@@ -5527,9 +5531,9 @@ function Server_menu {
 										Write-Host " $([string]::new([char]0x2500, 37))"
 							            echo ""
 
-							            $select = Read-Host -Prompt 'Select an option'
+							            $nextSelection = Read-Host -Prompt 'Select an option'
 
-                                        Server_menu
+                                        Server_menu -Selection $nextSelection
 
                                         return
                                 }
@@ -5547,7 +5551,6 @@ function Server_menu {
 									        #Return to Main menu if it wasn't started from CMD			
 								        if (($s -eq "") -and ($server -eq "")) 
 										        { 
-											        $select = $null
 													$script:lastServerActionSucceeded = $false
 
 											        return
@@ -5616,11 +5619,9 @@ function Server_menu {
                                         echo "`n"
 										echo "Select a number from the list (1-3)."
 										echo "`n"
-															
-										$select = $null
-															
+
 										Pause-BeforeMenu
-										Server_menu
+										Server_menu -Selection $null
 										return
                                 }
                         }
