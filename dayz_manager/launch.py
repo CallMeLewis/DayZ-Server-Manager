@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from dayz_manager._common import is_valid_workshop_id
 from dayz_manager.models import ManagerConfig
 
 
@@ -25,7 +26,7 @@ def get_mod_ids_from_launch_parameters(parameters: str, kind: str) -> list[str]:
     if not match:
         return []
 
-    return [value for value in match.group(1).split(";") if re.fullmatch(r"\d{8,}", value)]
+    return [value for value in match.group(1).split(";") if is_valid_workshop_id(value)]
 
 
 def set_mods_in_launch_parameters(parameters: str, kind: str, workshop_ids: list[str]) -> str:

@@ -184,9 +184,13 @@ def main() -> int:
         return 0
 
     if args.command == "workshop-usage-json":
-        payload = json.loads(sys.stdin.read())
-        print(json.dumps(workshop_usage_summary(args.platform, payload, args.workshop_id, args.kind)))
-        return 0
+        try:
+            payload = json.loads(sys.stdin.read())
+            print(json.dumps(workshop_usage_summary(args.platform, payload, args.workshop_id, args.kind)))
+            return 0
+        except (json.JSONDecodeError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
 
     if args.command == "remove-workshop-id-json":
         try:

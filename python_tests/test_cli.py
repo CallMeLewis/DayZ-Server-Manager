@@ -6,6 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+_ON_WINDOWS = sys.platform == "win32"
+_SKIP_LINUX_BASH_REASON = "linux bash tests require a POSIX shell environment"
+
 
 def run_cli(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -159,6 +162,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(json.loads(legacy_path.read_text(encoding="utf-8")), payload)
         self.assertFalse((legacy_path.parent / "server-manager.config.json.legacy.bak").exists())
 
+    @unittest.skipIf(_ON_WINDOWS, _SKIP_LINUX_BASH_REASON)
     def test_linux_mod_list_output_separates_entries_with_blank_lines(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "linux" / "lib" / "linux_manager.sh"
         temp_dir = Path(tempfile.mkdtemp())
@@ -193,6 +197,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("11111111)\n   https://example.invalid/cf\n\n", result.stdout)
         self.assertIn("22222222)\n   https://example.invalid/dabs\n\n", result.stdout)
 
+    @unittest.skipIf(_ON_WINDOWS, _SKIP_LINUX_BASH_REASON)
     def test_linux_config_path_helper_returns_xdg_location(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "linux" / "lib" / "linux_manager.sh"
         temp_dir = Path(tempfile.mkdtemp())
@@ -233,6 +238,7 @@ class CliTests(unittest.TestCase):
 
         self.assertIn("winget install -e --id Python.Python.3.12", result.stdout)
 
+    @unittest.skipIf(_ON_WINDOWS, _SKIP_LINUX_BASH_REASON)
     def test_linux_python_prereq_helper_returns_install_command(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "linux" / "lib" / "linux_manager.sh"
         command = [
@@ -267,6 +273,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("MISSING", result.stdout)
         self.assertIn("install -e --id Python.Python.3.12", result.stdout)
 
+    @unittest.skipIf(_ON_WINDOWS, _SKIP_LINUX_BASH_REASON)
     def test_linux_python_prereq_check_fails_when_python_missing(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "linux" / "lib" / "linux_manager.sh"
         command = [
@@ -533,6 +540,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(json.loads(config_path.read_text(encoding="utf-8")), original)
         self.assertFalse((doc_folder / "server-manager.config.json.import.bak").exists())
 
+    @unittest.skipIf(_ON_WINDOWS, _SKIP_LINUX_BASH_REASON)
     def test_linux_export_writes_expected_json(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "linux" / "lib" / "linux_manager.sh"
         temp_dir = Path(tempfile.mkdtemp())
@@ -573,6 +581,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(envelope["config"]["modLibrary"]["activeGroup"], "raid")
         self.assertNotIn("steamAccount", envelope["config"])
 
+    @unittest.skipIf(_ON_WINDOWS, _SKIP_LINUX_BASH_REASON)
     def test_linux_import_replaces_canonical_config(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "linux" / "lib" / "linux_manager.sh"
         temp_dir = Path(tempfile.mkdtemp())
@@ -626,6 +635,7 @@ class CliTests(unittest.TestCase):
         self.assertTrue((temp_dir / "server-manager.config.json.import.bak").exists())
         self.assertIn('template="empty.deerisle"', server_cfg_path.read_text(encoding="utf-8"))
 
+    @unittest.skipIf(_ON_WINDOWS, _SKIP_LINUX_BASH_REASON)
     def test_linux_import_refuses_invalid_payload_without_overwriting_canonical_config(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "linux" / "lib" / "linux_manager.sh"
         temp_dir = Path(tempfile.mkdtemp())
@@ -1394,6 +1404,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(json.loads(result.stdout), ["33333333"])
 
+    @unittest.skipIf(_ON_WINDOWS, _SKIP_LINUX_BASH_REASON)
     def test_linux_group_status_summary_falls_back_when_python_output_is_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -1437,6 +1448,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.stdout.strip(), "raid\tpresent\t1\t1\t0\tempty.60.deerisle")
 
+    @unittest.skipIf(_ON_WINDOWS, _SKIP_LINUX_BASH_REASON)
     def test_linux_inventory_mutation_falls_back_when_python_output_is_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

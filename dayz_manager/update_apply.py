@@ -3,28 +3,22 @@ from __future__ import annotations
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from dayz_manager._common import normalize_platform
 
 _ASSET_URL_TEMPLATE = (
     "https://github.com/CallMeLewis/DayZ-Server-Manager/releases/download/"
     "{tag}/dayz-server-manager-{platform}-x64-{tag}.zip"
 )
 _USER_AGENT = "dayz-server-manager-apply-update"
-_SUPPORTED_PLATFORMS = frozenset({"windows", "linux"})
-
-
-def _normalize_platform(platform: str) -> str:
-    normalized = (platform or "").strip().lower()
-    if normalized not in _SUPPORTED_PLATFORMS:
-        raise ValueError(f"unsupported platform: {platform!r}")
-    return normalized
 
 
 def build_release_zip_url(tag: str, platform: str) -> str:
-    return _ASSET_URL_TEMPLATE.format(tag=tag, platform=_normalize_platform(platform))
+    return _ASSET_URL_TEMPLATE.format(tag=tag, platform=normalize_platform(platform))
 
 
 def download_release_zip(tag: str, platform: str, destination: Path, timeout: float) -> None:
@@ -58,7 +52,7 @@ def extract_release_zip(zip_path: Path, staging_dir: Path) -> None:
 _RESERVED_DIRS = frozenset({".git", ".update-backup", ".update-staging"})
 
 
-def _iter_relative_files(root: Path):
+def _iter_relative_files(root: Path) -> Iterator[Path]:
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
@@ -103,7 +97,7 @@ def apply_update(tag: str, repo_root: Path, platform: str, timeout: float) -> di
     backup = repo_root / ".update-backup"
 
     try:
-        _normalize_platform(platform)
+        normalize_platform(platform)
     except ValueError as exc:
         return {
             "success": False,

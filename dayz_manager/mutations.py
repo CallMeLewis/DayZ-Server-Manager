@@ -4,17 +4,17 @@ import copy
 import re
 from typing import Any
 
+from dayz_manager._common import (
+    ensure_dict,
+    ensure_safe_workshop_id,
+    normalize_platform,
+    normalize_string,
+    normalize_workshop_id,
+    normalize_workshop_ids,
+)
 
-def _normalize_name(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value).strip()
-
-
-def _normalize_workshop_id(value: Any) -> str:
-    if isinstance(value, dict):
-        return _normalize_name(value.get("workshopId", ""))
-    return _normalize_name(value)
+_LINUX_ARRAY_BY_KIND = {"mods": "workshopIds", "serverMods": "serverWorkshopIds"}
+_SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._ -]+")
 
 
 def _as_group_list(value: Any) -> list[dict[str, Any]]:
@@ -26,7 +26,7 @@ def _as_group_list(value: Any) -> list[dict[str, Any]]:
 def _normalize_string_list(values: Any) -> list[str]:
     if not isinstance(values, list):
         return []
-    return [_normalize_name(value) for value in values if _normalize_name(value)]
+    return [normalized for value in values if (normalized := normalize_string(value))]
 
 
 def _normalize_linux_workshop_ids(values: Any) -> list[str]:
@@ -36,11 +36,10 @@ def _normalize_linux_workshop_ids(values: Any) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for value in values:
-        workshop_id = _normalize_name(value)
+        workshop_id = normalize_string(value)
         if not workshop_id:
             continue
-        if not re.fullmatch(r"\d{8,}", workshop_id):
-            raise ValueError(f"unsafe workshop id: {workshop_id}")
+        ensure_safe_workshop_id(workshop_id)
         if workshop_id in seen:
             continue
         seen.add(workshop_id)
@@ -51,11 +50,11 @@ def _normalize_linux_workshop_ids(values: Any) -> list[str]:
 def _remove_workshop_id_from_values(values: Any, workshop_id: str) -> list[Any]:
     if not isinstance(values, list):
         return []
-    return [value for value in values if _normalize_workshop_id(value) != workshop_id]
+    return [value for value in values if normalize_workshop_id(value) != workshop_id]
 
 
 def _normalize_target_kind(value: Any) -> str:
-    normalized = _normalize_name(value).lower()
+    normalized = normalize_string(value).lower()
     if normalized in ("mods", "client"):
         return "mods"
     if normalized in ("servermods", "server"):
@@ -72,13 +71,13 @@ def _find_best_existing_workshop_item(values: list[Any], workshop_id: str) -> di
     best_score = -1
 
     for value in values:
-        if _normalize_workshop_id(value) != workshop_id:
+        if normalize_workshop_id(value) != workshop_id:
             continue
         if isinstance(value, dict):
             candidate = {
                 "workshopId": workshop_id,
-                "name": _normalize_name(value.get("name", "")),
-                "url": _normalize_name(value.get("url", "")),
+                "name": normalize_string(value.get("name", "")),
+                "url": normalize_string(value.get("url", "")),
             }
         else:
             candidate = {"workshopId": workshop_id, "name": "", "url": ""}
@@ -91,8 +90,8 @@ def _find_best_existing_workshop_item(values: list[Any], workshop_id: str) -> di
 
 
 def _build_windows_workshop_item(workshop_id: str, item_name: Any, item_url: Any, existing_values: list[Any]) -> dict[str, str]:
-    name = _normalize_name(item_name)
-    url = _normalize_name(item_url)
+    name = normalize_string(item_name)
+    url = normalize_string(item_url)
     existing_item = _find_best_existing_workshop_item(existing_values, workshop_id)
     if not name and existing_item is not None:
         name = existing_item["name"]
@@ -102,8 +101,8 @@ def _build_windows_workshop_item(workshop_id: str, item_name: Any, item_url: Any
 
 
 def _build_linux_workshop_item(workshop_id: str, item_name: Any, item_url: Any, existing_values: list[Any]) -> Any:
-    name = _normalize_name(item_name)
-    url = _normalize_name(item_url)
+    name = normalize_string(item_name)
+    url = normalize_string(item_url)
     if name or url:
         if not url:
             url = _default_workshop_url(workshop_id)
@@ -122,28 +121,13 @@ def _set_workshop_item(values: Any, workshop_id: str, item: Any) -> list[Any]:
     return result
 
 
-def _unique_workshop_ids(values: Any) -> list[str]:
-    if not isinstance(values, list):
-        return []
-
-    result: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        workshop_id = _normalize_workshop_id(value)
-        if not workshop_id or workshop_id in seen:
-            continue
-        seen.add(workshop_id)
-        result.append(workshop_id)
-    return result
-
-
 def _find_group_index_case_insensitive(groups: list[dict[str, Any]], name: str) -> int | None:
     if not name:
         return None
 
     target = name.lower()
     for index, group in enumerate(groups):
-        group_name = _normalize_name(group.get("name", ""))
+        group_name = normalize_string(group.get("name", ""))
         if group_name.lower() == target:
             return index
     return None
@@ -151,13 +135,13 @@ def _find_group_index_case_insensitive(groups: list[dict[str, Any]], name: str) 
 
 def _find_group_index_exact(groups: list[dict[str, Any]], name: str) -> int | None:
     for index, group in enumerate(groups):
-        if _normalize_name(group.get("name", "")) == name:
+        if normalize_string(group.get("name", "")) == name:
             return index
     return None
 
 
 def _validate_windows_group_name(name: str, groups: list[dict[str, Any]], *, ignore_name: str | None = None) -> str:
-    normalized = _normalize_name(name)
+    normalized = normalize_string(name)
     if not normalized:
         raise ValueError("group name is required")
     if len(normalized) > 64:
@@ -165,7 +149,7 @@ def _validate_windows_group_name(name: str, groups: list[dict[str, Any]], *, ign
 
     ignore_lower = ignore_name.lower() if ignore_name else None
     for group in groups:
-        existing_name = _normalize_name(group.get("name", ""))
+        existing_name = normalize_string(group.get("name", ""))
         if not existing_name:
             continue
         existing_lower = existing_name.lower()
@@ -176,35 +160,34 @@ def _validate_windows_group_name(name: str, groups: list[dict[str, Any]], *, ign
     return normalized
 
 
-def _validate_linux_group_name(name: str) -> str:
-    normalized = _normalize_name(name)
+def _validate_safe_identifier(value: Any, *, label: str, extra_forbidden: str = "") -> str:
+    normalized = normalize_string(value)
     if not normalized:
-        raise ValueError("group name is required")
-    if any(char in normalized for char in ("\n", "\r", '"', "\\")):
-        raise ValueError(f"unsafe mod group name: {normalized}")
-    if not re.fullmatch(r"[A-Za-z0-9._ -]+", normalized):
-        raise ValueError(f"unsafe mod group name: {normalized}")
+        raise ValueError(f"{label} is required")
+    forbidden = ("\n", "\r", '"', "\\") + tuple(extra_forbidden)
+    if any(char in normalized for char in forbidden) or not _SAFE_NAME_RE.fullmatch(normalized):
+        raise ValueError(f"unsafe {label}: {normalized}")
     return normalized
+
+
+def _validate_linux_group_name(name: str) -> str:
+    return _validate_safe_identifier(name, label="mod group name")
 
 
 def _validate_linux_mission_name(name: Any) -> str:
-    normalized = _normalize_name(name)
+    normalized = normalize_string(name)
     if not normalized:
         return ""
-    if any(char in normalized for char in ("\n", "\r", '"', "\\", "/")):
-        raise ValueError(f"unsafe mission name: {normalized}")
-    if not re.fullmatch(r"[A-Za-z0-9._ -]+", normalized):
-        raise ValueError(f"unsafe mission name: {normalized}")
-    return normalized
+    return _validate_safe_identifier(normalized, label="mission name", extra_forbidden="/")
 
 
 def _mutate_windows_group_config(data: dict[str, Any], operation: str, **kwargs: Any) -> dict[str, Any]:
     updated = copy.deepcopy(data)
     groups = _as_group_list(updated.get("modGroups", []))
-    active_group = _normalize_name(updated.get("activeGroup", ""))
+    active_group = normalize_string(updated.get("activeGroup", ""))
 
     if operation == "add-workshop-item":
-        workshop_id = _normalize_name(kwargs.get("workshop_id", ""))
+        workshop_id = normalize_string(kwargs.get("workshop_id", ""))
         target_kind = _normalize_target_kind(kwargs.get("target_kind", ""))
         existing_values = [*updated.get("mods", []), *updated.get("serverMods", [])]
         updated[target_kind] = _set_workshop_item(
@@ -220,7 +203,7 @@ def _mutate_windows_group_config(data: dict[str, Any], operation: str, **kwargs:
         return updated
 
     if operation == "move-workshop-item":
-        workshop_id = _normalize_name(kwargs.get("workshop_id", ""))
+        workshop_id = normalize_string(kwargs.get("workshop_id", ""))
         target_kind = _normalize_target_kind(kwargs.get("target_kind", ""))
         existing_values = [*updated.get("mods", []), *updated.get("serverMods", [])]
         existing_item = _find_best_existing_workshop_item(existing_values, workshop_id)
@@ -241,22 +224,22 @@ def _mutate_windows_group_config(data: dict[str, Any], operation: str, **kwargs:
         return updated
 
     if operation == "set-active":
-        group_name = _normalize_name(kwargs.get("group_name", ""))
+        group_name = normalize_string(kwargs.get("group_name", ""))
         if not group_name:
             updated["activeGroup"] = ""
             return updated
         target_index = _find_group_index_case_insensitive(groups, group_name)
         if target_index is None:
             raise ValueError(f"unknown mod group: {group_name}")
-        updated["activeGroup"] = _normalize_name(groups[target_index].get("name", ""))
+        updated["activeGroup"] = normalize_string(groups[target_index].get("name", ""))
         return updated
 
     if operation == "rename":
-        old_name = _normalize_name(kwargs.get("old_name", ""))
+        old_name = normalize_string(kwargs.get("old_name", ""))
         target_index = _find_group_index_case_insensitive(groups, old_name)
         if target_index is None:
             raise ValueError(f"unknown mod group: {old_name}")
-        new_name = _validate_windows_group_name(kwargs.get("new_name", ""), groups, ignore_name=_normalize_name(groups[target_index].get("name", "")))
+        new_name = _validate_windows_group_name(kwargs.get("new_name", ""), groups, ignore_name=normalize_string(groups[target_index].get("name", "")))
         groups[target_index]["name"] = new_name
         if active_group and active_group == old_name:
             updated["activeGroup"] = new_name
@@ -264,7 +247,7 @@ def _mutate_windows_group_config(data: dict[str, Any], operation: str, **kwargs:
         return updated
 
     if operation == "delete":
-        group_name = _normalize_name(kwargs.get("group_name", ""))
+        group_name = normalize_string(kwargs.get("group_name", ""))
         if len(groups) <= 1:
             raise ValueError("cannot delete last remaining group")
         if active_group == group_name:
@@ -277,17 +260,17 @@ def _mutate_windows_group_config(data: dict[str, Any], operation: str, **kwargs:
         return updated
 
     if operation == "upsert":
-        existing_name = _normalize_name(kwargs.get("existing_name", ""))
-        requested_name = _normalize_name(kwargs.get("group_name", ""))
+        existing_name = normalize_string(kwargs.get("existing_name", ""))
+        requested_name = normalize_string(kwargs.get("group_name", ""))
         target_index = _find_group_index_case_insensitive(groups, existing_name) if existing_name else None
-        ignore_name = _normalize_name(groups[target_index].get("name", "")) if target_index is not None else None
+        ignore_name = normalize_string(groups[target_index].get("name", "")) if target_index is not None else None
         final_name = _validate_windows_group_name(requested_name, groups, ignore_name=ignore_name)
         group_payload: dict[str, Any] = {
             "name": final_name,
             "mods": _normalize_string_list(kwargs.get("client_ids", [])),
             "serverMods": _normalize_string_list(kwargs.get("server_ids", [])),
         }
-        mission_name = _normalize_name(kwargs.get("mission_name", ""))
+        mission_name = normalize_string(kwargs.get("mission_name", ""))
         if mission_name:
             group_payload["mission"] = mission_name
 
@@ -299,16 +282,27 @@ def _mutate_windows_group_config(data: dict[str, Any], operation: str, **kwargs:
         return updated
 
     if operation == "remove-workshop-id":
-        workshop_id = _normalize_name(kwargs.get("workshop_id", ""))
+        workshop_id = normalize_string(kwargs.get("workshop_id", ""))
         updated["mods"] = _remove_workshop_id_from_values(updated.get("mods", []), workshop_id)
         updated["serverMods"] = _remove_workshop_id_from_values(updated.get("serverMods", []), workshop_id)
         for group in groups:
-            group["mods"] = [item for item in group.get("mods", []) if _normalize_workshop_id(item) != workshop_id]
-            group["serverMods"] = [item for item in group.get("serverMods", []) if _normalize_workshop_id(item) != workshop_id]
+            group["mods"] = [item for item in group.get("mods", []) if normalize_workshop_id(item) != workshop_id]
+            group["serverMods"] = [item for item in group.get("serverMods", []) if normalize_workshop_id(item) != workshop_id]
         updated["modGroups"] = groups
         return updated
 
     raise ValueError(f"unsupported operation: {operation}")
+
+
+def _apply_linux_active_group_update(groups: list[dict[str, Any]], active_group: str, target_kind: str, workshop_id: str) -> None:
+    if not active_group:
+        return
+    other_kind = "serverMods" if target_kind == "mods" else "mods"
+    for group in groups:
+        if normalize_string(group.get("name", "")) != active_group:
+            continue
+        group[target_kind] = normalize_workshop_ids([*group.get(target_kind, []), workshop_id])
+        group[other_kind] = [item for item in group.get(other_kind, []) if normalize_workshop_id(item) != workshop_id]
 
 
 def _mutate_linux_group_config(data: dict[str, Any], operation: str, **kwargs: Any) -> dict[str, Any]:
@@ -319,14 +313,12 @@ def _mutate_linux_group_config(data: dict[str, Any], operation: str, **kwargs: A
         updated["modLibrary"] = mod_library
 
     groups = _as_group_list(mod_library.get("groups", []))
-    active_group = _normalize_name(mod_library.get("activeGroup", ""))
+    active_group = normalize_string(mod_library.get("activeGroup", ""))
 
     if operation == "add-workshop-item":
-        workshop_id = _normalize_name(kwargs.get("workshop_id", ""))
-        if not re.fullmatch(r"\d{8,}", workshop_id):
-            raise ValueError(f"unsafe workshop id: {workshop_id}")
+        workshop_id = ensure_safe_workshop_id(normalize_string(kwargs.get("workshop_id", "")))
         target_kind = _normalize_target_kind(kwargs.get("target_kind", ""))
-        array_name = "serverWorkshopIds" if target_kind == "serverMods" else "workshopIds"
+        array_name = _LINUX_ARRAY_BY_KIND[target_kind]
         existing_values = [*mod_library.get("workshopIds", []), *mod_library.get("serverWorkshopIds", [])]
         mod_library[array_name] = _set_workshop_item(
             mod_library.get(array_name, []),
@@ -340,27 +332,17 @@ def _mutate_linux_group_config(data: dict[str, Any], operation: str, **kwargs: A
         )
         if not active_group:
             return updated
-        for group in groups:
-            if _normalize_name(group.get("name", "")) != active_group:
-                continue
-            if target_kind == "mods":
-                group["mods"] = _unique_workshop_ids([*group.get("mods", []), workshop_id])
-                group["serverMods"] = [item for item in group.get("serverMods", []) if _normalize_workshop_id(item) != workshop_id]
-            else:
-                group["serverMods"] = _unique_workshop_ids([*group.get("serverMods", []), workshop_id])
-                group["mods"] = [item for item in group.get("mods", []) if _normalize_workshop_id(item) != workshop_id]
+        _apply_linux_active_group_update(groups, active_group, target_kind, workshop_id)
         mod_library["groups"] = groups
         return updated
 
     if operation == "move-workshop-item":
-        workshop_id = _normalize_name(kwargs.get("workshop_id", ""))
-        if not re.fullmatch(r"\d{8,}", workshop_id):
-            raise ValueError(f"unsafe workshop id: {workshop_id}")
+        workshop_id = ensure_safe_workshop_id(normalize_string(kwargs.get("workshop_id", "")))
         if not active_group:
             raise ValueError("Set an active mod group before moving mods between client and server lists.")
         target_kind = _normalize_target_kind(kwargs.get("target_kind", ""))
-        target_array = "serverWorkshopIds" if target_kind == "serverMods" else "workshopIds"
-        source_array = "workshopIds" if target_kind == "serverMods" else "serverWorkshopIds"
+        target_array = _LINUX_ARRAY_BY_KIND[target_kind]
+        source_array = _LINUX_ARRAY_BY_KIND["serverMods" if target_kind == "mods" else "mods"]
         existing_values = [*mod_library.get("workshopIds", []), *mod_library.get("serverWorkshopIds", [])]
         mod_library[target_array] = _set_workshop_item(
             mod_library.get(target_array, []),
@@ -373,20 +355,12 @@ def _mutate_linux_group_config(data: dict[str, Any], operation: str, **kwargs: A
             ),
         )
         mod_library[source_array] = _remove_workshop_id_from_values(mod_library.get(source_array, []), workshop_id)
-        for group in groups:
-            if _normalize_name(group.get("name", "")) != active_group:
-                continue
-            if target_kind == "mods":
-                group["mods"] = _unique_workshop_ids([*group.get("mods", []), workshop_id])
-                group["serverMods"] = [item for item in group.get("serverMods", []) if _normalize_workshop_id(item) != workshop_id]
-            else:
-                group["serverMods"] = _unique_workshop_ids([*group.get("serverMods", []), workshop_id])
-                group["mods"] = [item for item in group.get("mods", []) if _normalize_workshop_id(item) != workshop_id]
+        _apply_linux_active_group_update(groups, active_group, target_kind, workshop_id)
         mod_library["groups"] = groups
         return updated
 
     if operation == "set-active":
-        group_name = _normalize_name(kwargs.get("group_name", ""))
+        group_name = normalize_string(kwargs.get("group_name", ""))
         if group_name:
             group_name = _validate_linux_group_name(group_name)
             if _find_group_index_exact(groups, group_name) is None:
@@ -408,7 +382,7 @@ def _mutate_linux_group_config(data: dict[str, Any], operation: str, **kwargs: A
 
     if operation == "delete":
         group_name = _validate_linux_group_name(kwargs.get("group_name", ""))
-        mod_library["groups"] = [group for group in groups if _normalize_name(group.get("name", "")) != group_name]
+        mod_library["groups"] = [group for group in groups if normalize_string(group.get("name", "")) != group_name]
         if active_group == group_name:
             mod_library["activeGroup"] = ""
         return updated
@@ -424,18 +398,16 @@ def _mutate_linux_group_config(data: dict[str, Any], operation: str, **kwargs: A
             "serverMods": server_ids,
             "mission": mission_name,
         }
-        mod_library["groups"] = [group for group in groups if _normalize_name(group.get("name", "")) != group_name] + [group_payload]
+        mod_library["groups"] = [group for group in groups if normalize_string(group.get("name", "")) != group_name] + [group_payload]
         return updated
 
     if operation == "remove-workshop-id":
-        workshop_id = _normalize_name(kwargs.get("workshop_id", ""))
-        if not re.fullmatch(r"\d{8,}", workshop_id):
-            raise ValueError(f"unsafe workshop id: {workshop_id}")
+        workshop_id = ensure_safe_workshop_id(normalize_string(kwargs.get("workshop_id", "")))
         mod_library["workshopIds"] = _remove_workshop_id_from_values(mod_library.get("workshopIds", []), workshop_id)
         mod_library["serverWorkshopIds"] = _remove_workshop_id_from_values(mod_library.get("serverWorkshopIds", []), workshop_id)
         for group in groups:
-            group["mods"] = [item for item in group.get("mods", []) if _normalize_workshop_id(item) != workshop_id]
-            group["serverMods"] = [item for item in group.get("serverMods", []) if _normalize_workshop_id(item) != workshop_id]
+            group["mods"] = [item for item in group.get("mods", []) if normalize_workshop_id(item) != workshop_id]
+            group["serverMods"] = [item for item in group.get("serverMods", []) if normalize_workshop_id(item) != workshop_id]
         mod_library["groups"] = groups
         return updated
 
@@ -443,11 +415,8 @@ def _mutate_linux_group_config(data: dict[str, Any], operation: str, **kwargs: A
 
 
 def mutate_group_config(platform: str, data: dict[str, Any], operation: str, **kwargs: Any) -> dict[str, Any]:
-    platform_key = _normalize_name(platform).lower()
-    if not isinstance(data, dict):
-        raise ValueError("config payload must be a JSON object")
+    ensure_dict(data, "config payload must be a JSON object")
+    platform_key = normalize_platform(platform)
     if platform_key == "windows":
         return _mutate_windows_group_config(data, operation, **kwargs)
-    if platform_key == "linux":
-        return _mutate_linux_group_config(data, operation, **kwargs)
-    raise ValueError(f"unsupported platform: {platform}")
+    return _mutate_linux_group_config(data, operation, **kwargs)

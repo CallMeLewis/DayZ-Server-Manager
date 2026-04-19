@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
+
+from dayz_manager._common import is_valid_workshop_id
 
 
 @dataclass
@@ -45,34 +46,25 @@ class ManagerConfig:
                 return group
         return None
 
-    @property
-    def active_client_ids(self) -> list[str]:
-        group = self.get_group(self.active_group_name)
-        if group:
-            return list(group.mods)
-        return list(self.library_client_ids)
-
-    @property
-    def active_server_ids(self) -> list[str]:
-        group = self.get_group(self.active_group_name)
-        if group:
-            return list(group.server_mods)
-        return list(self.library_server_ids)
-
-    def active_ids_for_kind(self, kind: str) -> list[str]:
-        if kind == "serverMods":
-            return self.active_server_ids
-        return self.active_client_ids
-
     def ids_for_kind(self, kind: str, *, strict_active_group: bool = False) -> list[str]:
         group = self.get_group(self.active_group_name)
         if group:
             return list(group.server_mods if kind == "serverMods" else group.mods)
         if strict_active_group and self.active_group_name:
             return []
-        if kind == "serverMods":
-            return list(self.library_server_ids)
-        return list(self.library_client_ids)
+        source = self.library_server_ids if kind == "serverMods" else self.library_client_ids
+        return list(source)
+
+    def active_ids_for_kind(self, kind: str) -> list[str]:
+        return self.ids_for_kind(kind)
+
+    @property
+    def active_client_ids(self) -> list[str]:
+        return self.ids_for_kind("mods")
+
+    @property
+    def active_server_ids(self) -> list[str]:
+        return self.ids_for_kind("serverMods")
 
     def group_status_summary(self) -> dict[str, object]:
         active_group = self.active_group_name
@@ -97,15 +89,18 @@ class ManagerConfig:
                 "missionName": "",
             }
 
-        dangling_client = [item for item in group.mods if item not in self.library_client_ids]
-        dangling_server = [item for item in group.server_mods if item not in self.library_server_ids]
+        client_library = set(self.library_client_ids)
+        server_library = set(self.library_server_ids)
+        dangling_count = sum(1 for item in group.mods if item not in client_library) + sum(
+            1 for item in group.server_mods if item not in server_library
+        )
 
         return {
             "activeGroup": active_group,
             "groupState": "present",
             "clientCount": len(group.mods),
             "serverCount": len(group.server_mods),
-            "danglingCount": len(dangling_client) + len(dangling_server),
+            "danglingCount": dangling_count,
             "missionName": group.mission,
         }
 
@@ -154,4 +149,4 @@ class ManagerConfig:
 
     def valid_library_ids_for_kind(self, kind: str) -> list[str]:
         source = self.library_server_ids if kind == "serverMods" else self.library_client_ids
-        return [item for item in source if re.fullmatch(r"\d{8,}", item)]
+        return [item for item in source if is_valid_workshop_id(item)]

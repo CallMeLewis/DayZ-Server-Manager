@@ -48,49 +48,44 @@ def fetch_latest_release(timeout: float) -> dict[str, str] | None:
     return {"tag": tag.strip(), "url": url if isinstance(url, str) else ""}
 
 
+def _result(current_version: str, *, latest_version: str | None = None, latest_tag: str | None = None,
+            release_url: str | None = None, update_available: bool = False,
+            error: str | None = None) -> dict[str, object]:
+    return {
+        "currentVersion": current_version,
+        "latestVersion": latest_version,
+        "latestTag": latest_tag,
+        "releaseUrl": release_url,
+        "updateAvailable": update_available,
+        "error": error,
+    }
+
+
 def check_update(current_version: str, timeout: float) -> dict[str, object]:
     try:
-        parse_version(current_version)
+        parsed_current = parse_version(current_version)
     except ValueError as exc:
-        return {
-            "currentVersion": current_version,
-            "latestVersion": None,
-            "latestTag": None,
-            "releaseUrl": None,
-            "updateAvailable": False,
-            "error": f"invalid current version: {exc}",
-        }
+        return _result(current_version, error=f"invalid current version: {exc}")
 
     release = fetch_latest_release(timeout=timeout)
     if release is None:
-        return {
-            "currentVersion": current_version,
-            "latestVersion": None,
-            "latestTag": None,
-            "releaseUrl": None,
-            "updateAvailable": False,
-            "error": "network error",
-        }
+        return _result(current_version, error="network error")
 
     tag = release["tag"]
     try:
         parsed_latest = parse_version(tag)
     except ValueError:
-        return {
-            "currentVersion": current_version,
-            "latestVersion": None,
-            "latestTag": tag,
-            "releaseUrl": release.get("url") or None,
-            "updateAvailable": False,
-            "error": f"invalid tag: {tag}",
-        }
+        return _result(
+            current_version,
+            latest_tag=tag,
+            release_url=release.get("url") or None,
+            error=f"invalid tag: {tag}",
+        )
 
-    latest_version = ".".join(str(part) for part in parsed_latest)
-    return {
-        "currentVersion": current_version,
-        "latestVersion": latest_version,
-        "latestTag": tag,
-        "releaseUrl": release.get("url") or None,
-        "updateAvailable": compare_versions(current_version, latest_version) < 0,
-        "error": None,
-    }
+    return _result(
+        current_version,
+        latest_version=".".join(str(part) for part in parsed_latest),
+        latest_tag=tag,
+        release_url=release.get("url") or None,
+        update_available=parsed_current < parsed_latest,
+    )
